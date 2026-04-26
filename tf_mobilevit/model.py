@@ -10,6 +10,53 @@ from torch import nn
 import torch.nn.functional as F
 
 
+def load_checkpoint_file(path: str) -> dict[str, torch.Tensor]:
+    checkpoint_path = Path(path).expanduser()
+    if checkpoint_path.suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except Exception as exc:
+            raise RuntimeError("Loading .safetensors weights requires `safetensors`. Install it with requirements.txt.") from exc
+        return load_file(str(checkpoint_path))
+    checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+    if isinstance(checkpoint, dict):
+        for key in ("state_dict", "model", "model_state_dict"):
+            if key in checkpoint and isinstance(checkpoint[key], dict):
+                return checkpoint[key]
+    return checkpoint
+
+
+def convert_timm_feature_key(key: str) -> str:
+    for idx in range(8):
+        prefix = f"stages.{idx}."
+        if key.startswith(prefix):
+            return f"stages_{idx}." + key[len(prefix) :]
+    return key
+
+
+def load_local_timm_features_checkpoint(model: nn.Module, path: str) -> None:
+    raw_state = load_checkpoint_file(path)
+    model_state = model.state_dict()
+    converted: dict[str, torch.Tensor] = {}
+    skipped = 0
+    for key, value in raw_state.items():
+        new_key = convert_timm_feature_key(key.removeprefix("module."))
+        if new_key.startswith(("head.", "classifier.", "fc.")):
+            skipped += 1
+            continue
+        if new_key in model_state and model_state[new_key].shape == value.shape:
+            converted[new_key] = value
+        else:
+            skipped += 1
+    incompatible = model.load_state_dict(converted, strict=False)
+    print(
+        f"Loaded local timm checkpoint from {path}: "
+        f"{len(converted)} tensors loaded, {skipped} skipped, "
+        f"{len(incompatible.missing_keys)} missing, {len(incompatible.unexpected_keys)} unexpected.",
+        flush=True,
+    )
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
         super().__init__()
@@ -130,10 +177,11 @@ class TimmEncoder(nn.Module):
         self.model = timm.create_model(
             name,
             pretrained=pretrained and not checkpoint_path,
-            checkpoint_path=checkpoint_path,
             features_only=True,
             out_indices=(0, 1, 2, 3),
         )
+        if checkpoint_path:
+            load_local_timm_features_checkpoint(self.model, checkpoint_path)
         self.out_channels = list(self.model.feature_info.channels())
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:

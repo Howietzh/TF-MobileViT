@@ -59,7 +59,7 @@ By default the config expects a local timm MobileViT checkpoint at:
 weights/model.safetensors
 ```
 
-The `weights/` directory is ignored by git. If this file exists, the model loads it locally and does not contact Hugging Face for MobileViT weights. To use online timm pretrained download instead, set `model.pretrained_path: null`.
+The `weights/` directory is ignored by git. If this file exists, the model loads it locally and does not contact Hugging Face for MobileViT weights. The loader adapts timm classification checkpoint keys for `features_only=True` encoders and ignores classifier-head tensors. To use online timm pretrained download instead, set `model.pretrained_path: null`.
 
 ## Commands
 
