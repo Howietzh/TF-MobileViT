@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 from .ablations import run_ablations
 from .config import load_config
@@ -52,18 +53,23 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = apply_dataset_overrides(load_config(args.config), args)
+    rank = int(os.environ.get("RANK", "0"))
     if args.command == "train":
         result = train(config)
-        print(json.dumps(result, indent=2))
+        if rank == 0:
+            print(json.dumps(result, indent=2))
     elif args.command == "eval":
         result = evaluate(config, args.checkpoint)
-        print(json.dumps(result, indent=2))
+        if rank == 0:
+            print(json.dumps(result, indent=2))
     elif args.command == "infer":
         out = infer_image(config, args.checkpoint, args.input, args.output)
-        print(out)
+        if rank == 0:
+            print(out)
     elif args.command == "ablate":
         result = run_ablations(config)
-        print(json.dumps(result, indent=2))
+        if rank == 0:
+            print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

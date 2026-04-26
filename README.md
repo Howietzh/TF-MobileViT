@@ -75,6 +75,46 @@ Useful overrides:
 SUBSETS="1 3 5" RUN_ROOT=runs/few_shot_mobilevit bash scripts/run_few_shot.sh
 ```
 
+By default, the batch script runs two experiments for every subset:
+
+- `tf_mobilevit`: Gabor + LBP + CLAHE + TFGAM
+- `mobilevit_no_trad`: MobileViT baseline without traditional image features
+
+Outputs are written to:
+
+```text
+runs/few_shot/tf_mobilevit/subset_1
+runs/few_shot/mobilevit_no_trad/subset_1
+```
+
+Run only one experiment when needed:
+
+```bash
+EXPERIMENTS="mobilevit_no_trad" bash scripts/run_few_shot.sh
+```
+
+Multi-GPU training uses PyTorch DDP through `torchrun`:
+
+```bash
+torchrun --nproc_per_node=2 -m tf_mobilevit.cli train --config configs/default.yaml
+```
+
+The few-shot script can launch DDP runs too:
+
+```bash
+GPUS=2 bash scripts/run_few_shot.sh
+```
+
+Only rank 0 writes TensorBoard logs, `history.csv`, metrics, and checkpoints.
+
+Training writes scalar logs for TensorBoard under each run directory:
+
+```bash
+tensorboard --logdir runs/few_shot
+```
+
+Each run also keeps `history.csv`, `metrics.json`, and checkpoints in its output directory. During training, the terminal prints batch loss, learning rate, timing, and epoch-level validation metrics.
+
 ## Smoke Check
 
 ```bash

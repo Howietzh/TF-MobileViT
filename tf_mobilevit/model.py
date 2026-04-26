@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any
 
 import torch
@@ -165,7 +166,17 @@ class TFMobileViT(nn.Module):
                 self.encoder_kind = "timm"
             else:
                 raise ImportError
-        except Exception:
+        except ModuleNotFoundError:
+            warnings.warn(
+                "timm is not installed; falling back to the built-in MobileViT-style encoder. "
+                "Install requirements.txt to use pretrained timm MobileViT weights.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self.encoder = BuiltInMobileViTEncoder(channels[0], channels)
+            enc_channels = self.encoder.out_channels
+            self.encoder_input = nn.Identity()
+        except ImportError:
             self.encoder = BuiltInMobileViTEncoder(channels[0], channels)
             enc_channels = self.encoder.out_channels
             self.encoder_input = nn.Identity()
@@ -192,4 +203,3 @@ class TFMobileViT(nn.Module):
 def build_model(config: dict[str, Any], trad_channels: int) -> TFMobileViT:
     num_classes = len(config["dataset"]["classes"])
     return TFMobileViT(num_classes=num_classes, trad_channels=trad_channels, config=config.get("model", {}))
-

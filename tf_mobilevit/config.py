@@ -42,7 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
         "name": "tf_mobilevit",
         "timm_backbone": "mobilevit_xxs",
-        "pretrained": False,
+        "pretrained": True,
         "encoder_channels": [32, 48, 64, 96],
         "decoder_channels": 64,
         "use_tfgam": True,
@@ -50,6 +50,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "train": {
         "epochs": 50,
         "batch_size": 4,
+        "log_interval": 10,
+        "tensorboard": True,
+        "distributed": "auto",
         "lr": 3e-4,
         "weight_decay": 1e-4,
         "loss": {"dice": 1.0, "focal": 1.0, "boundary": 0.0},

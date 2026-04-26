@@ -12,19 +12,24 @@ from .engine import evaluate, infer_image, train
 
 
 def _write_split(root: Path, split: str) -> None:
-    image_dir = root / "images" / split
-    mask_dir = root / "masks" / split
+    image_dir = root / "images"
+    mask_dir = root / "annotations"
     image_dir.mkdir(parents=True, exist_ok=True)
     mask_dir.mkdir(parents=True, exist_ok=True)
+    split_lines = []
     for idx in range(2):
+        sample_id = f"{split}_{idx}"
+        split_lines.append(sample_id)
         image = np.zeros((96, 96, 3), dtype=np.uint8)
         image[..., 0] = np.linspace(0, 255, 96, dtype=np.uint8)[None, :]
         image[..., 1] = 80 + idx * 20
         image[24:72, 40 + idx : 43 + idx, :] = 240
         mask = np.zeros((96, 96), dtype=np.uint8)
         mask[24:72, 40 + idx : 43 + idx] = 1 + idx
-        Image.fromarray(image).save(image_dir / f"sample_{idx}.png")
-        Image.fromarray(mask).save(mask_dir / f"sample_{idx}.png")
+        Image.fromarray(image).save(image_dir / f"{sample_id}.png")
+        Image.fromarray(mask).save(mask_dir / f"{sample_id}.png")
+    split_file = "train_subset_1.txt" if split == "train" else f"{split}.txt"
+    (root / split_file).write_text("\n".join(split_lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -34,6 +39,11 @@ def main() -> None:
             _write_split(root, split)
         cfg = deepcopy(DEFAULT_CONFIG)
         cfg["dataset"]["root"] = str(root)
+        cfg["dataset"]["image_dir"] = "images"
+        cfg["dataset"]["mask_dir"] = "annotations"
+        cfg["dataset"]["train_split_file"] = "train_subset_1.txt"
+        cfg["dataset"]["val_split_file"] = "val.txt"
+        cfg["dataset"]["test_split_file"] = "test.txt"
         cfg["dataset"]["patch_size"] = 64
         cfg["dataset"]["overlap"] = 0.5
         cfg["dataset"]["classes"] = ["background", "fpc_crack", "end_face_scratch"]
@@ -43,14 +53,17 @@ def main() -> None:
         cfg["model"]["decoder_channels"] = 16
         cfg["train"]["epochs"] = 1
         cfg["train"]["batch_size"] = 1
+        cfg["train"]["log_interval"] = 1
         cfg["train"]["output_dir"] = str(Path(tmp) / "run")
         cfg["eval"]["batch_size"] = 1
         metrics = train(cfg)
         evaluate(cfg, Path(cfg["train"]["output_dir"]) / "best.pt")
-        out = infer_image(cfg, Path(cfg["train"]["output_dir"]) / "best.pt", root / "images" / "test" / "sample_0.png", Path(tmp) / "pred")
+        tensorboard_dir = Path(cfg["train"]["output_dir"]) / "tensorboard"
+        if not tensorboard_dir.exists():
+            raise RuntimeError("TensorBoard log directory was not created")
+        out = infer_image(cfg, Path(cfg["train"]["output_dir"]) / "best.pt", root / "images" / "test_0.png", Path(tmp) / "pred")
         print({"smoke": "ok", "metrics": metrics, "prediction": str(out)})
 
 
 if __name__ == "__main__":
     main()
-
