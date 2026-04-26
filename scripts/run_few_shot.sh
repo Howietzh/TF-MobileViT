@@ -10,6 +10,9 @@ GPUS=${GPUS:-1}
 FEATURE_COMPUTE_DEVICE=${FEATURE_COMPUTE_DEVICE:-gpu}
 USE_CLAHE=${USE_CLAHE:-false}
 PYTHON=${PYTHON:-python}
+current_log_file=""
+
+trap 'if [[ -n "${current_log_file}" ]]; then echo "==== interrupted at $(date '"'"'+%Y-%m-%d %H:%M:%S'"'"') ====" | tee -a "${current_log_file}" >&2; fi; exit 130' INT TERM
 
 mkdir -p "${RUN_ROOT}/configs"
 
@@ -34,11 +37,24 @@ for subset in ${SUBSETS}; do
   for experiment in ${EXPERIMENTS}; do
     output_dir="${RUN_ROOT}/${experiment}/subset_${subset}"
     generated_config="${RUN_ROOT}/configs/${experiment}_subset_${subset}.yaml"
+    log_file="${output_dir}/train.log"
+    mkdir -p "${output_dir}"
+    current_log_file="${log_file}"
 
     echo
     echo "==== Running ${experiment} | few-shot subset ${subset}: ${split_file} ===="
 
-    "${PYTHON}" - "${CONFIG}" "${generated_config}" "${DATA_ROOT}" "${split_file}" "${output_dir}" "${experiment}" "${FEATURE_COMPUTE_DEVICE}" "${USE_CLAHE}" <<'PY'
+    {
+      echo "==== ${experiment} subset ${subset} started at $(date '+%Y-%m-%d %H:%M:%S') ===="
+      echo "Config: ${generated_config}"
+      echo "Output dir: ${output_dir}"
+      echo "GPUs: ${GPUS}"
+      echo "Feature compute device: ${FEATURE_COMPUTE_DEVICE}"
+      echo "Use CLAHE: ${USE_CLAHE}"
+    } | tee "${log_file}"
+
+    set +e
+    "${PYTHON}" - "${CONFIG}" "${generated_config}" "${DATA_ROOT}" "${split_file}" "${output_dir}" "${experiment}" "${FEATURE_COMPUTE_DEVICE}" "${USE_CLAHE}" <<'PY' 2>&1 | tee -a "${log_file}"
 import sys
 from pathlib import Path
 
@@ -83,12 +99,31 @@ dst_path.parent.mkdir(parents=True, exist_ok=True)
 with dst_path.open("w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 PY
+    config_status=${PIPESTATUS[0]}
+    set -e
 
-    if [[ "${GPUS}" -gt 1 ]]; then
-      "${PYTHON}" -m torch.distributed.run --nproc_per_node="${GPUS}" -m tf_mobilevit.cli train --config "${generated_config}"
-    else
-      "${PYTHON}" -m tf_mobilevit.cli train --config "${generated_config}"
+    if [[ "${config_status}" -ne 0 ]]; then
+      echo "==== ${experiment} subset ${subset} config generation failed with exit code ${config_status} at $(date '+%Y-%m-%d %H:%M:%S') ====" | tee -a "${log_file}" >&2
+      exit "${config_status}"
     fi
+
+    set +e
+    if [[ "${GPUS}" -gt 1 ]]; then
+      "${PYTHON}" -m torch.distributed.run --nproc_per_node="${GPUS}" -m tf_mobilevit.cli train --config "${generated_config}" 2>&1 | tee -a "${log_file}"
+      status=${PIPESTATUS[0]}
+    else
+      "${PYTHON}" -m tf_mobilevit.cli train --config "${generated_config}" 2>&1 | tee -a "${log_file}"
+      status=${PIPESTATUS[0]}
+    fi
+    set -e
+
+    if [[ "${status}" -ne 0 ]]; then
+      echo "==== ${experiment} subset ${subset} failed with exit code ${status} at $(date '+%Y-%m-%d %H:%M:%S') ====" | tee -a "${log_file}" >&2
+      exit "${status}"
+    fi
+
+    echo "==== ${experiment} subset ${subset} finished at $(date '+%Y-%m-%d %H:%M:%S') ====" | tee -a "${log_file}"
+    current_log_file=""
   done
 done
 

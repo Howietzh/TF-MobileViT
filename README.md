@@ -117,6 +117,8 @@ runs/few_shot/tf_mobilevit/subset_1
 runs/few_shot/mobilevit_no_trad/subset_1
 ```
 
+Each run writes terminal output and interruption/failure messages to `train.log` inside its output directory.
+
 Run only one experiment when needed:
 
 ```bash
