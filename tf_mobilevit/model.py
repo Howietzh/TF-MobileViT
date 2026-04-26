@@ -34,13 +34,17 @@ def convert_timm_feature_key(key: str) -> str:
     return key
 
 
+def remove_prefix(value: str, prefix: str) -> str:
+    return value[len(prefix) :] if value.startswith(prefix) else value
+
+
 def load_local_timm_features_checkpoint(model: nn.Module, path: str) -> None:
     raw_state = load_checkpoint_file(path)
     model_state = model.state_dict()
     converted: dict[str, torch.Tensor] = {}
     skipped = 0
     for key, value in raw_state.items():
-        new_key = convert_timm_feature_key(key.removeprefix("module."))
+        new_key = convert_timm_feature_key(remove_prefix(key, "module."))
         if new_key.startswith(("head.", "classifier.", "fc.")):
             skipped += 1
             continue
