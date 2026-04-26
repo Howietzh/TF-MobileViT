@@ -33,14 +33,14 @@ dataset:
 
 features:
   enabled: true
-  compute_device: cpu
+  compute_device: gpu
   gpu_features:
     gabor: true
     lbp: true
     clahe: false
   use_gabor: true
   use_lbp: true
-  use_clahe: true
+  use_clahe: false
   gabor_orientations: [0, 30, 60, 90, 120, 150]
   gabor_kernel_size: 21
   gabor_sigma: 4.0
@@ -59,7 +59,7 @@ model:
   encoder_channels: [32, 48, 64, 96]
   decoder_channels: 64
   use_tfgam: true
-  feature_channels: 8
+  feature_channels: 7
 
 train:
   epochs: 50

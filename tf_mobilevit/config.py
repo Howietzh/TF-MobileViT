@@ -26,11 +26,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "features": {
         "enabled": True,
-        "compute_device": "cpu",
+        "compute_device": "gpu",
         "gpu_features": {"gabor": True, "lbp": True, "clahe": False},
         "use_gabor": True,
         "use_lbp": True,
-        "use_clahe": True,
+        "use_clahe": False,
         "gabor_orientations": [0, 30, 60, 90, 120, 150],
         "gabor_kernel_size": 21,
         "gabor_sigma": 4.0,
@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "encoder_channels": [32, 48, 64, 96],
         "decoder_channels": 64,
         "use_tfgam": True,
+        "feature_channels": 7,
     },
     "train": {
         "epochs": 50,

@@ -93,6 +93,18 @@ Useful overrides:
 SUBSETS="1 3 5" RUN_ROOT=runs/few_shot_mobilevit bash scripts/run_few_shot.sh
 ```
 
+The few-shot script uses GPU batch computation for Gabor and LBP by default:
+
+```bash
+FEATURE_COMPUTE_DEVICE=gpu USE_CLAHE=false bash scripts/run_few_shot.sh
+```
+
+To reproduce the older CPU feature path with CLAHE:
+
+```bash
+FEATURE_COMPUTE_DEVICE=cpu USE_CLAHE=true bash scripts/run_few_shot.sh
+```
+
 By default, the batch script runs two experiments for every subset:
 
 - `tf_mobilevit`: Gabor + LBP + CLAHE + TFGAM

@@ -7,6 +7,8 @@ RUN_ROOT=${RUN_ROOT:-runs/few_shot}
 SUBSETS=${SUBSETS:-"1 2 3 4 5 6 7"}
 EXPERIMENTS=${EXPERIMENTS:-"tf_mobilevit mobilevit_no_trad"}
 GPUS=${GPUS:-1}
+FEATURE_COMPUTE_DEVICE=${FEATURE_COMPUTE_DEVICE:-gpu}
+USE_CLAHE=${USE_CLAHE:-false}
 PYTHON=${PYTHON:-python}
 
 mkdir -p "${RUN_ROOT}/configs"
@@ -17,6 +19,8 @@ echo "Run root: ${RUN_ROOT}"
 echo "Subsets: ${SUBSETS}"
 echo "Experiments: ${EXPERIMENTS}"
 echo "GPUs: ${GPUS}"
+echo "Feature compute device: ${FEATURE_COMPUTE_DEVICE}"
+echo "Use CLAHE: ${USE_CLAHE}"
 
 for subset in ${SUBSETS}; do
   split_file="train_subset_${subset}.txt"
@@ -34,13 +38,14 @@ for subset in ${SUBSETS}; do
     echo
     echo "==== Running ${experiment} | few-shot subset ${subset}: ${split_file} ===="
 
-    "${PYTHON}" - "${CONFIG}" "${generated_config}" "${DATA_ROOT}" "${split_file}" "${output_dir}" "${experiment}" <<'PY'
+    "${PYTHON}" - "${CONFIG}" "${generated_config}" "${DATA_ROOT}" "${split_file}" "${output_dir}" "${experiment}" "${FEATURE_COMPUTE_DEVICE}" "${USE_CLAHE}" <<'PY'
 import sys
 from pathlib import Path
 
 import yaml
 
-src, dst, data_root, split_file, output_dir, experiment = sys.argv[1:]
+src, dst, data_root, split_file, output_dir, experiment, feature_compute_device, use_clahe = sys.argv[1:]
+use_clahe = use_clahe.lower() in {"1", "true", "yes", "y"}
 with open(src, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
@@ -64,9 +69,11 @@ if experiment == "mobilevit_no_trad":
 elif experiment == "tf_mobilevit":
     cfg.setdefault("features", {})
     cfg["features"]["enabled"] = True
+    cfg["features"]["compute_device"] = feature_compute_device
+    cfg["features"]["gpu_features"] = {"gabor": True, "lbp": True, "clahe": False}
     cfg["features"]["use_gabor"] = True
     cfg["features"]["use_lbp"] = True
-    cfg["features"]["use_clahe"] = True
+    cfg["features"]["use_clahe"] = use_clahe and feature_compute_device != "gpu"
     cfg["model"]["use_tfgam"] = True
 else:
     raise ValueError(f"Unknown experiment: {experiment}")
