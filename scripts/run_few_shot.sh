@@ -4,7 +4,7 @@ set -euo pipefail
 CONFIG=${CONFIG:-configs/default.yaml}
 DATA_ROOT=${DATA_ROOT:-data/CCM_Defect}
 RUN_ROOT=${RUN_ROOT:-runs/few_shot}
-SUBSETS=${SUBSETS:-"1 2 3 4 5 6"}
+SUBSETS=${SUBSETS:-"1 2 3 4 5 6 7"}
 PYTHON=${PYTHON:-python}
 
 mkdir -p "${RUN_ROOT}/configs"
