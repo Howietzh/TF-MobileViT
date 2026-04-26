@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from .config import save_config
 from .data import CCMPatchDataset, load_rgb
-from .features import FeatureConfig, compute_traditional_features, feature_channel_count
+from .features import FeatureConfig, TraditionalFeatureExtractor, compute_traditional_features, feature_channel_count, uses_gpu_features
 from .losses import CombinedLoss
 from .metrics import SegmentationMetrics
 from .model import build_model
@@ -87,6 +88,31 @@ def make_loader(config: dict[str, Any], split: str, training: bool, distributed:
     )
 
 
+def build_feature_extractor(feature_config: FeatureConfig, device: torch.device) -> TraditionalFeatureExtractor | None:
+    if not uses_gpu_features(feature_config):
+        return None
+    extractor = TraditionalFeatureExtractor(feature_config).to(device)
+    extractor.eval()
+    return extractor
+
+
+def feature_channels_for_model(feature_config: FeatureConfig) -> int:
+    if uses_gpu_features(feature_config):
+        return TraditionalFeatureExtractor(feature_config).out_channels
+    return feature_channel_count(feature_config)
+
+
+def get_batch_features(
+    batch: dict[str, Any],
+    image: torch.Tensor,
+    feature_extractor: TraditionalFeatureExtractor | None,
+    device: torch.device,
+) -> torch.Tensor:
+    if feature_extractor is not None:
+        return feature_extractor(image)
+    return batch["features"].to(device)
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -98,6 +124,7 @@ def train_one_epoch(
     writer: Any | None,
     global_step: int,
     log_interval: int,
+    feature_extractor: TraditionalFeatureExtractor | None,
     print_logs: bool = True,
 ) -> tuple[float, int]:
     model.train()
@@ -107,7 +134,7 @@ def train_one_epoch(
     for batch_idx, batch in enumerate(loader, start=1):
         batch_started = time.perf_counter()
         image = batch["image"].to(device)
-        features = batch["features"].to(device)
+        features = get_batch_features(batch, image, feature_extractor, device)
         mask = batch["mask"].to(device)
         optimizer.zero_grad(set_to_none=True)
         logits = model(image, features)
@@ -138,7 +165,13 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate_model(model: torch.nn.Module, loader: DataLoader, config: dict[str, Any], device: torch.device) -> dict[str, float]:
+def evaluate_model(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    config: dict[str, Any],
+    device: torch.device,
+    feature_extractor: TraditionalFeatureExtractor | None = None,
+) -> dict[str, float]:
     model.eval()
     num_classes = len(config["dataset"]["classes"])
     ignore_index = int(config["dataset"].get("ignore_index", 255))
@@ -147,7 +180,7 @@ def evaluate_model(model: torch.nn.Module, loader: DataLoader, config: dict[str,
     samples = 0
     for batch in loader:
         image = batch["image"].to(device)
-        features = batch["features"].to(device)
+        features = get_batch_features(batch, image, feature_extractor, device)
         mask = batch["mask"].to(device)
         logits = model(image, features)
         metrics.update(logits, mask)
@@ -174,7 +207,8 @@ def train(config: dict[str, Any]) -> dict[str, float]:
         save_config(config, output_dir / "config.yaml")
 
     feature_config = FeatureConfig.from_dict(config.get("features", {}))
-    trad_channels = feature_channel_count(feature_config)
+    trad_channels = feature_channels_for_model(feature_config)
+    feature_extractor = build_feature_extractor(feature_config, device)
     model = build_model(config, trad_channels).to(device)
     if distributed:
         ddp_kwargs: dict[str, Any] = {}
@@ -199,11 +233,15 @@ def train(config: dict[str, Any]) -> dict[str, float]:
 
             writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
         except Exception as exc:
-            raise RuntimeError(
+            warnings.warn(
                 "TensorBoard logging is enabled, but SummaryWriter could not be initialized. "
-                "Install dependencies with `pip install -r requirements.txt` or set "
-                "`train.tensorboard: false` in the config."
-            ) from exc
+                "Training will continue without TensorBoard. Install dependencies with "
+                "`pip install -r requirements.txt` or set `train.tensorboard: false` in the config. "
+                f"Original error: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            writer = None
 
     best_dice = -1.0
     history: list[dict[str, float | int]] = []
@@ -233,9 +271,10 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 writer,
                 global_step,
                 log_interval,
+                feature_extractor,
                 is_main_process(),
             )
-            metrics = evaluate_model(model, val_loader, config, device)
+            metrics = evaluate_model(model, val_loader, config, device, feature_extractor)
             epoch_time = time.perf_counter() - epoch_started
             is_best = metrics["foreground_dice"] > best_dice
             if is_best and is_main_process():
@@ -296,10 +335,11 @@ def train(config: dict[str, Any]) -> dict[str, float]:
 def evaluate(config: dict[str, Any], checkpoint_path: str | Path) -> dict[str, float]:
     device = get_device(config.get("device", "auto"))
     feature_config = FeatureConfig.from_dict(config.get("features", {}))
-    model = build_model(config, feature_channel_count(feature_config)).to(device)
+    feature_extractor = build_feature_extractor(feature_config, device)
+    model = build_model(config, feature_channels_for_model(feature_config)).to(device)
     load_checkpoint(checkpoint_path, model, device)
     loader = make_loader(config, "test", training=False)
-    metrics = evaluate_model(model, loader, config, device)
+    metrics = evaluate_model(model, loader, config, device, feature_extractor)
     out = ensure_dir(config["train"]["output_dir"])
     with (out / "test_metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
@@ -310,7 +350,8 @@ def evaluate(config: dict[str, Any], checkpoint_path: str | Path) -> dict[str, f
 def infer_image(config: dict[str, Any], checkpoint_path: str | Path, image_path: str | Path, output_dir: str | Path) -> Path:
     device = get_device(config.get("device", "auto"))
     feature_config = FeatureConfig.from_dict(config.get("features", {}))
-    model = build_model(config, feature_channel_count(feature_config)).to(device)
+    feature_extractor = build_feature_extractor(feature_config, device)
+    model = build_model(config, feature_channels_for_model(feature_config)).to(device)
     load_checkpoint(checkpoint_path, model, device)
     model.eval()
 
@@ -323,7 +364,10 @@ def infer_image(config: dict[str, Any], checkpoint_path: str | Path, image_path:
     for coord in coords:
         patch = extract_patch(image, coord, patch_size, pad_value=0)
         rgb = torch.from_numpy(patch.astype(np.float32).transpose(2, 0, 1) / 255.0)[None].to(device)
-        trad = torch.from_numpy(compute_traditional_features(patch, feature_config))[None].to(device)
+        if feature_extractor is not None:
+            trad = feature_extractor(rgb)
+        else:
+            trad = torch.from_numpy(compute_traditional_features(patch, feature_config))[None].to(device)
         logits = model(rgb, trad)
         probs.append(logits.softmax(dim=1).squeeze(0).cpu())
     stitched = stitch_probabilities(probs, coords, (height, width))

@@ -26,6 +26,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "features": {
         "enabled": True,
+        "compute_device": "cpu",
+        "gpu_features": {"gabor": True, "lbp": True, "clahe": False},
         "use_gabor": True,
         "use_lbp": True,
         "use_clahe": True,

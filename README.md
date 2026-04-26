@@ -61,6 +61,16 @@ weights/model.safetensors
 
 The `weights/` directory is ignored by git. If this file exists, the model loads it locally and does not contact Hugging Face for MobileViT weights. The loader adapts timm classification checkpoint keys for `features_only=True` encoders and ignores classifier-head tensors. To use online timm pretrained download instead, set `model.pretrained_path: null`.
 
+Traditional feature extraction can be moved from DataLoader workers to the training device for faster batch computation of Gabor and LBP:
+
+```yaml
+features:
+  compute_device: gpu
+  use_clahe: false
+```
+
+CLAHE remains CPU-only; disable it for the fastest GPU feature path or keep `compute_device: cpu` when strict CLAHE features are required.
+
 ## Commands
 
 ```bash

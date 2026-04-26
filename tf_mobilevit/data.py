@@ -10,7 +10,7 @@ import torch
 from PIL import Image, ImageEnhance
 from torch.utils.data import Dataset
 
-from .features import FeatureConfig, compute_traditional_features
+from .features import FeatureConfig, compute_traditional_features, uses_gpu_features
 from .patches import PatchCoord, compute_patch_grid, extract_patch
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -166,6 +166,7 @@ class CCMPatchDataset(Dataset):
         self.overlap = float(data_cfg.get("overlap", 0.5))
         self.ignore_index = int(data_cfg.get("ignore_index", 255))
         self.feature_config = FeatureConfig.from_dict(config.get("features", {}))
+        self.defer_features = uses_gpu_features(self.feature_config)
         self.augment = RandomAugment(data_cfg.get("augment", {})) if training else RandomAugment({"enabled": False})
         self.pairs = find_pairs(
             data_cfg["root"],
@@ -211,7 +212,10 @@ class CCMPatchDataset(Dataset):
         image_patch = extract_patch(image, record.coord, self.patch_size, pad_value=0)
         mask_patch = extract_patch(mask, record.coord, self.patch_size, pad_value=self.ignore_index)
         image_patch, mask_patch = self.augment(image_patch, mask_patch)
-        trad = compute_traditional_features(image_patch, self.feature_config)
+        if self.defer_features:
+            trad = np.zeros((0, self.patch_size, self.patch_size), dtype=np.float32)
+        else:
+            trad = compute_traditional_features(image_patch, self.feature_config)
         rgb = torch.from_numpy(image_patch.astype(np.float32).transpose(2, 0, 1) / 255.0)
         features = torch.from_numpy(trad)
         target = torch.from_numpy(mask_patch.astype(np.int64))

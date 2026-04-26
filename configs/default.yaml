@@ -33,6 +33,11 @@ dataset:
 
 features:
   enabled: true
+  compute_device: cpu
+  gpu_features:
+    gabor: true
+    lbp: true
+    clahe: false
   use_gabor: true
   use_lbp: true
   use_clahe: true
