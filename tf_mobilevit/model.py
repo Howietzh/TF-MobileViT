@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -121,11 +122,18 @@ class BuiltInMobileViTEncoder(nn.Module):
 
 
 class TimmEncoder(nn.Module):
-    def __init__(self, name: str, pretrained: bool) -> None:
+    def __init__(self, name: str, pretrained: bool, pretrained_path: str | None = None) -> None:
         super().__init__()
         import timm
 
-        self.model = timm.create_model(name, pretrained=pretrained, features_only=True, out_indices=(0, 1, 2, 3))
+        checkpoint_path = str(Path(pretrained_path).expanduser()) if pretrained_path else ""
+        self.model = timm.create_model(
+            name,
+            pretrained=pretrained and not checkpoint_path,
+            checkpoint_path=checkpoint_path,
+            features_only=True,
+            out_indices=(0, 1, 2, 3),
+        )
         self.out_channels = list(self.model.feature_info.channels())
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
@@ -160,7 +168,20 @@ class TFMobileViT(nn.Module):
         self.encoder_kind = "builtin"
         try:
             if config.get("timm_backbone"):
-                self.encoder = TimmEncoder(config["timm_backbone"], bool(config.get("pretrained", False)))
+                pretrained_path = config.get("pretrained_path")
+                if pretrained_path and not Path(str(pretrained_path)).expanduser().exists():
+                    warnings.warn(
+                        f"Configured pretrained_path does not exist: {pretrained_path}. "
+                        "Falling back to timm pretrained download if enabled.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    pretrained_path = None
+                self.encoder = TimmEncoder(
+                    config["timm_backbone"],
+                    bool(config.get("pretrained", False)),
+                    str(pretrained_path) if pretrained_path else None,
+                )
                 enc_channels = self.encoder.out_channels
                 self.encoder_input = nn.Conv2d(channels[0], 3, 1)
                 self.encoder_kind = "timm"

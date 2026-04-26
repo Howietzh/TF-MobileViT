@@ -9,5 +9,7 @@ checkpoints/
 outputs/
 data/
 CCM_Defect/
+weights/
 *.pt
 *.pth
+*.safetensors

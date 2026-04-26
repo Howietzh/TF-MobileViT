@@ -53,6 +53,14 @@ pip install -r requirements.txt
 
 The implementation can run without `timm`; when `timm` is unavailable it falls back to the built-in compact MobileViT-style encoder. Installing `timm` is recommended for research experiments.
 
+By default the config expects a local timm MobileViT checkpoint at:
+
+```text
+weights/model.safetensors
+```
+
+The `weights/` directory is ignored by git. If this file exists, the model loads it locally and does not contact Hugging Face for MobileViT weights. To use online timm pretrained download instead, set `model.pretrained_path: null`.
+
 ## Commands
 
 ```bash

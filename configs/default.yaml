@@ -50,6 +50,7 @@ model:
   name: tf_mobilevit
   timm_backbone: mobilevit_xxs
   pretrained: true
+  pretrained_path: weights/model.safetensors
   encoder_channels: [32, 48, 64, 96]
   decoder_channels: 64
   use_tfgam: true

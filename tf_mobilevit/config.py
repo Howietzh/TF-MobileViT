@@ -43,6 +43,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "name": "tf_mobilevit",
         "timm_backbone": "mobilevit_xxs",
         "pretrained": True,
+        "pretrained_path": "weights/model.safetensors",
         "encoder_channels": [32, 48, 64, 96],
         "decoder_channels": 64,
         "use_tfgam": True,
