@@ -63,6 +63,18 @@ python -m tf_mobilevit.cli infer --config configs/default.yaml --checkpoint runs
 python -m tf_mobilevit.cli ablate --config configs/default.yaml
 ```
 
+Batch few-shot training:
+
+```bash
+bash scripts/run_few_shot.sh
+```
+
+Useful overrides:
+
+```bash
+SUBSETS="1 3 5" RUN_ROOT=runs/few_shot_mobilevit bash scripts/run_few_shot.sh
+```
+
 ## Smoke Check
 
 ```bash
