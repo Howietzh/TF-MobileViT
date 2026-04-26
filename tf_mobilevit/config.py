@@ -55,6 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "epochs": 50,
         "batch_size": 4,
         "log_interval": 10,
+        "val_interval": 5,
         "tensorboard": True,
         "distributed": "auto",
         "lr": 3e-4,
@@ -63,7 +64,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "output_dir": "runs/tf_mobilevit",
         "save_every": 10,
     },
-    "eval": {"batch_size": 2, "threshold": 0.5},
+    "eval": {"batch_size": 8, "threshold": 0.5},
 }
 
 

@@ -248,6 +248,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
     global_step = 0
     total_epochs = int(config["train"].get("epochs", 50))
     log_interval = int(config["train"].get("log_interval", 10))
+    val_interval = int(config["train"].get("val_interval", 1))
     params = count_parameters(model)
     if is_main_process():
         print(
@@ -274,9 +275,12 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 feature_extractor,
                 is_main_process(),
             )
-            metrics = evaluate_model(model, val_loader, config, device, feature_extractor)
+            should_validate = (val_interval > 0 and epoch % val_interval == 0) or epoch == total_epochs
+            metrics: dict[str, float] = {}
+            if should_validate:
+                metrics = evaluate_model(model, val_loader, config, device, feature_extractor)
             epoch_time = time.perf_counter() - epoch_started
-            is_best = metrics["foreground_dice"] > best_dice
+            is_best = should_validate and metrics["foreground_dice"] > best_dice
             if is_best and is_main_process():
                 best_dice = metrics["foreground_dice"]
                 save_checkpoint(output_dir / "best.pt", unwrap_model(model), config, metrics)
@@ -289,6 +293,14 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 "params": params,
                 "epoch_time_sec": epoch_time,
                 "best_foreground_dice": best_dice,
+                "validated": should_validate,
+                "mean_iou": metrics.get("mean_iou", ""),
+                "mean_dice": metrics.get("mean_dice", ""),
+                "mean_recall": metrics.get("mean_recall", ""),
+                "foreground_iou": metrics.get("foreground_iou", ""),
+                "foreground_dice": metrics.get("foreground_dice", ""),
+                "foreground_recall": metrics.get("foreground_recall", ""),
+                "fps": metrics.get("fps", ""),
                 **metrics,
             }
             history.append(row)
@@ -297,27 +309,35 @@ def train(config: dict[str, Any]) -> dict[str, float]:
 
             if writer is not None and is_main_process():
                 writer.add_scalar("epoch/train_loss", loss, epoch)
-                writer.add_scalar("val/mean_dice", metrics["mean_dice"], epoch)
-                writer.add_scalar("val/foreground_dice", metrics["foreground_dice"], epoch)
-                writer.add_scalar("val/mean_iou", metrics["mean_iou"], epoch)
-                writer.add_scalar("val/foreground_iou", metrics["foreground_iou"], epoch)
-                writer.add_scalar("val/mean_recall", metrics["mean_recall"], epoch)
-                writer.add_scalar("val/foreground_recall", metrics["foreground_recall"], epoch)
-                writer.add_scalar("val/fps", metrics["fps"], epoch)
+                if should_validate:
+                    writer.add_scalar("val/mean_dice", metrics["mean_dice"], epoch)
+                    writer.add_scalar("val/foreground_dice", metrics["foreground_dice"], epoch)
+                    writer.add_scalar("val/mean_iou", metrics["mean_iou"], epoch)
+                    writer.add_scalar("val/foreground_iou", metrics["foreground_iou"], epoch)
+                    writer.add_scalar("val/mean_recall", metrics["mean_recall"], epoch)
+                    writer.add_scalar("val/foreground_recall", metrics["foreground_recall"], epoch)
+                    writer.add_scalar("val/fps", metrics["fps"], epoch)
                 writer.add_scalar("train/epoch_time_sec", epoch_time, epoch)
                 writer.add_scalar("model/params", params, epoch)
                 writer.flush()
 
             if is_main_process():
-                print(
-                    f"Epoch {epoch}/{total_epochs} done | train_loss={loss:.4f} "
-                    f"| fg_dice={metrics['foreground_dice']:.4f} "
-                    f"| fg_iou={metrics['foreground_iou']:.4f} "
-                    f"| recall={metrics['foreground_recall']:.4f} "
-                    f"| fps={metrics['fps']:.2f} | best={best_dice:.4f}"
-                    f"{' | saved best' if is_best else ''}",
-                    flush=True,
-                )
+                if should_validate:
+                    print(
+                        f"Epoch {epoch}/{total_epochs} done | train_loss={loss:.4f} "
+                        f"| fg_dice={metrics['foreground_dice']:.4f} "
+                        f"| fg_iou={metrics['foreground_iou']:.4f} "
+                        f"| recall={metrics['foreground_recall']:.4f} "
+                        f"| fps={metrics['fps']:.2f} | best={best_dice:.4f}"
+                        f"{' | saved best' if is_best else ''}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"Epoch {epoch}/{total_epochs} done | train_loss={loss:.4f} "
+                        f"| validation skipped | next val every {val_interval} epochs | best={best_dice:.4f}",
+                        flush=True,
+                    )
 
             if is_main_process() and epoch % int(config["train"].get("save_every", 10)) == 0:
                 save_checkpoint(output_dir / f"epoch_{epoch}.pt", unwrap_model(model), config, metrics)

@@ -145,6 +145,8 @@ tensorboard --logdir runs/few_shot
 
 Each run also keeps `history.csv`, `metrics.json`, and checkpoints in its output directory. During training, the terminal prints batch loss, learning rate, timing, and epoch-level validation metrics.
 
+Validation runs every 5 epochs by default and once at the final epoch. The best checkpoint is updated only on validation epochs using foreground Dice.
+
 ## Smoke Check
 
 ```bash
