@@ -1,0 +1,72 @@
+seed: 42
+device: auto
+num_workers: 2
+
+dataset:
+  root: data/CCM_Defect
+  image_dir: images
+  mask_dir: annotations
+  layout: split_files
+  train_split_file: train_subset_1.txt
+  val_split_file: val.txt
+  test_split_file: test.txt
+  classes:
+    - background
+    - FPC cracks
+    - foreign particles
+    - end face notches
+    - lens scratches
+  patch_size: 512
+  overlap: 0.5
+  ignore_index: 255
+  train_sampling:
+    defect: 0.6
+    boundary: 0.2
+    normal: 0.2
+  augment:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.2
+    rotate90: 0.5
+    brightness: 0.15
+    contrast: 0.15
+
+features:
+  enabled: true
+  use_gabor: true
+  use_lbp: true
+  use_clahe: true
+  gabor_orientations: [0, 30, 60, 90, 120, 150]
+  gabor_kernel_size: 21
+  gabor_sigma: 4.0
+  gabor_lambda: 10.0
+  gabor_gamma: 0.5
+  lbp_radius: 1
+  lbp_points: 8
+  clahe_clip_limit: 2.0
+  clahe_tile_grid_size: [8, 8]
+
+model:
+  name: tf_mobilevit
+  timm_backbone: mobilevit_xxs
+  pretrained: false
+  encoder_channels: [32, 48, 64, 96]
+  decoder_channels: 64
+  use_tfgam: true
+  feature_channels: 8
+
+train:
+  epochs: 50
+  batch_size: 4
+  lr: 0.0003
+  weight_decay: 0.0001
+  loss:
+    dice: 1.0
+    focal: 1.0
+    boundary: 0.0
+  output_dir: runs/tf_mobilevit
+  save_every: 10
+
+eval:
+  batch_size: 2
+  threshold: 0.5
