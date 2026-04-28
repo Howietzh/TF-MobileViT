@@ -222,6 +222,16 @@ def train(config: dict[str, Any]) -> dict[str, float]:
         lr=float(config["train"].get("lr", 3e-4)),
         weight_decay=float(config["train"].get("weight_decay", 1e-4)),
     )
+    scheduler_name = str(config["train"].get("scheduler", "none")).lower()
+    scheduler = None
+    if scheduler_name == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=int(config["train"].get("epochs", 50)),
+            eta_min=float(config["train"].get("min_lr", 1e-6)),
+        )
+    elif scheduler_name not in {"none", "constant", ""}:
+        raise ValueError(f"Unsupported scheduler: {scheduler_name}")
     train_loader = make_loader(config, "train", training=True, distributed=distributed)
     val_loader = make_loader(config, "val", training=False, distributed=distributed)
 
@@ -261,6 +271,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
             if distributed and isinstance(train_loader.sampler, DistributedSampler):
                 train_loader.sampler.set_epoch(epoch)
             epoch_started = time.perf_counter()
+            current_lr = float(optimizer.param_groups[0]["lr"])
             loss, global_step = train_one_epoch(
                 model,
                 train_loader,
@@ -291,6 +302,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 "epoch": epoch,
                 "train_loss": loss,
                 "params": params,
+                "lr": current_lr,
                 "epoch_time_sec": epoch_time,
                 "best_foreground_dice": best_dice,
                 "validated": should_validate,
@@ -309,6 +321,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
 
             if writer is not None and is_main_process():
                 writer.add_scalar("epoch/train_loss", loss, epoch)
+                writer.add_scalar("epoch/lr", current_lr, epoch)
                 if should_validate:
                     writer.add_scalar("val/mean_dice", metrics["mean_dice"], epoch)
                     writer.add_scalar("val/foreground_dice", metrics["foreground_dice"], epoch)
@@ -325,6 +338,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 if should_validate:
                     print(
                         f"Epoch {epoch}/{total_epochs} done | train_loss={loss:.4f} "
+                        f"| lr={current_lr:.2e} "
                         f"| fg_dice={metrics['foreground_dice']:.4f} "
                         f"| fg_iou={metrics['foreground_iou']:.4f} "
                         f"| recall={metrics['foreground_recall']:.4f} "
@@ -335,12 +349,15 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 else:
                     print(
                         f"Epoch {epoch}/{total_epochs} done | train_loss={loss:.4f} "
+                        f"| lr={current_lr:.2e} "
                         f"| validation skipped | next val every {val_interval} epochs | best={best_dice:.4f}",
                         flush=True,
                     )
 
             if is_main_process() and epoch % int(config["train"].get("save_every", 10)) == 0:
                 save_checkpoint(output_dir / f"epoch_{epoch}.pt", unwrap_model(model), config, metrics)
+            if scheduler is not None:
+                scheduler.step()
         final_metrics = dict(history[-1])
         if is_main_process():
             with (output_dir / "metrics.json").open("w", encoding="utf-8") as f:
