@@ -49,6 +49,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "encoder_channels": [32, 48, 64, 96],
         "decoder_channels": 64,
         "use_tfgam": True,
+        "tfgam_mode": "multiscale",
+        "tfgam_alpha_init": 0.1,
+        "direct_mobilevit_input": True,
         "feature_channels": 7,
     },
     "train": {

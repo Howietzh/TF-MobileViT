@@ -82,6 +82,8 @@ if experiment == "mobilevit_no_trad":
     cfg["features"]["use_lbp"] = False
     cfg["features"]["use_clahe"] = False
     cfg["model"]["use_tfgam"] = False
+    cfg["model"]["tfgam_mode"] = "multiscale"
+    cfg["model"]["direct_mobilevit_input"] = True
 elif experiment == "tf_mobilevit":
     cfg.setdefault("features", {})
     cfg["features"]["enabled"] = True
@@ -91,6 +93,9 @@ elif experiment == "tf_mobilevit":
     cfg["features"]["use_lbp"] = True
     cfg["features"]["use_clahe"] = use_clahe and feature_compute_device != "gpu"
     cfg["model"]["use_tfgam"] = True
+    cfg["model"]["tfgam_mode"] = "multiscale"
+    cfg["model"]["tfgam_alpha_init"] = cfg["model"].get("tfgam_alpha_init", 0.1)
+    cfg["model"]["direct_mobilevit_input"] = True
 else:
     raise ValueError(f"Unknown experiment: {experiment}")
 

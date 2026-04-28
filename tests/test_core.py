@@ -6,7 +6,7 @@ from PIL import Image
 
 from tf_mobilevit.data import CCMPatchDataset
 from tf_mobilevit.features import FeatureConfig, TraditionalFeatureExtractor, compute_traditional_features, feature_channel_count
-from tf_mobilevit.model import build_model
+from tf_mobilevit.model import MultiScaleTFGAM, build_model
 from tf_mobilevit.patches import compute_patch_grid, extract_patch, stitch_probabilities
 
 
@@ -53,6 +53,7 @@ def test_model_forward_shape() -> None:
             "encoder_channels": [8, 12, 16, 24],
             "decoder_channels": 16,
             "use_tfgam": True,
+            "tfgam_alpha_init": 0.1,
         },
     }
     model = build_model(config, trad_channels=8)
@@ -72,6 +73,7 @@ def test_model_forward_with_gpu_features() -> None:
             "encoder_channels": [8, 12, 16, 24],
             "decoder_channels": 16,
             "use_tfgam": True,
+            "tfgam_alpha_init": 0.1,
         },
     }
     image = torch.rand(1, 3, 64, 64)
@@ -79,6 +81,34 @@ def test_model_forward_with_gpu_features() -> None:
     model = build_model(config, trad_channels=features.shape[1])
     logits = model(image, features)
     assert logits.shape == (1, 3, 64, 64)
+
+
+def test_multiscale_tfgam_shapes_and_learnable_alphas() -> None:
+    module = MultiScaleTFGAM(trad_channels=7, feature_channels=[8, 12, 16, 24], alpha_init=0.1)
+    features = [
+        torch.randn(2, 8, 32, 32),
+        torch.randn(2, 12, 16, 16),
+        torch.randn(2, 16, 8, 8),
+        torch.randn(2, 24, 4, 4),
+    ]
+    trad = torch.rand(2, 7, 64, 64)
+    guided = module(features, trad)
+
+    assert [item.shape for item in guided] == [item.shape for item in features]
+    assert module.alphas is not None
+    assert module.alphas.requires_grad
+    assert module.alphas.shape == (4,)
+    assert any(param is module.alphas for param in module.parameters())
+
+
+def test_multiscale_tfgam_identity_without_traditional_features() -> None:
+    module = MultiScaleTFGAM(trad_channels=7, feature_channels=[8, 12], alpha_init=0.1)
+    features = [torch.randn(1, 8, 16, 16), torch.randn(1, 12, 8, 8)]
+    guided = module(features, None)
+
+    assert len(guided) == len(features)
+    for original, output in zip(features, guided):
+        assert torch.equal(original, output)
 
 
 def test_split_file_dataset_layout(tmp_path) -> None:

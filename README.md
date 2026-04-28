@@ -6,7 +6,7 @@ This repository provides a runnable PyTorch research implementation with:
 
 - overlapping high-resolution patch training and inference
 - Gabor, LBP, and CLAHE traditional feature priors
-- a Traditional Feature-Guided Attention Module (TFGAM)
+- a multi-scale Traditional Feature-Guided Attention Module (TFGAM)
 - a lightweight MobileViT-style encoder-decoder segmentation model
 - train, eval, infer, and ablation CLIs
 
@@ -71,6 +71,14 @@ features:
 
 CLAHE remains CPU-only; disable it for the fastest GPU feature path or keep `compute_device: cpu` when strict CLAHE features are required.
 
+The default TF-MobileViT model feeds RGB patches directly into the timm MobileViT encoder. Traditional features guide the encoder outputs through multi-scale TFGAM instead of being injected before MobileViT:
+
+```text
+F_s_guided = F_s + alpha_s * (F_s * A_s)
+```
+
+Each encoder scale has its own attention block and learnable scalar `alpha_s`, initialized by `model.tfgam_alpha_init`.
+
 ## Commands
 
 ```bash
@@ -107,7 +115,7 @@ FEATURE_COMPUTE_DEVICE=cpu USE_CLAHE=true bash scripts/run_few_shot.sh
 
 By default, the batch script runs two experiments for every subset:
 
-- `tf_mobilevit`: Gabor + LBP + CLAHE + TFGAM
+- `tf_mobilevit`: Gabor + LBP + optional CLAHE + multi-scale TFGAM
 - `mobilevit_no_trad`: MobileViT baseline without traditional image features
 
 Outputs are written to:

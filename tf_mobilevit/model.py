@@ -134,24 +134,56 @@ class MobileViTBlock(nn.Module):
 
 
 class TFGAM(nn.Module):
-    def __init__(self, trad_channels: int, rgb_channels: int) -> None:
+    def __init__(self, trad_channels: int, target_channels: int) -> None:
         super().__init__()
         if trad_channels <= 0:
             self.encoder = None
         else:
             self.encoder = nn.Sequential(
-                nn.Conv2d(trad_channels, rgb_channels, 3, padding=1, bias=False),
-                nn.BatchNorm2d(rgb_channels),
+                nn.Conv2d(trad_channels, target_channels, 3, padding=1, bias=False),
+                nn.BatchNorm2d(target_channels),
                 nn.SiLU(inplace=True),
-                nn.Conv2d(rgb_channels, rgb_channels, 1),
+                nn.Conv2d(target_channels, target_channels, 1),
                 nn.Sigmoid(),
             )
 
-    def forward(self, rgb_features: torch.Tensor, trad_features: torch.Tensor | None) -> torch.Tensor:
+    def forward(self, target_features: torch.Tensor, trad_features: torch.Tensor | None) -> torch.Tensor:
         if self.encoder is None or trad_features is None or trad_features.shape[1] == 0:
-            return rgb_features
+            return target_features
         attention = self.encoder(trad_features)
-        return rgb_features * attention + rgb_features
+        return target_features * attention
+
+
+class MultiScaleTFGAM(nn.Module):
+    def __init__(self, trad_channels: int, feature_channels: list[int], alpha_init: float = 0.1) -> None:
+        super().__init__()
+        self.enabled = trad_channels > 0 and len(feature_channels) > 0
+        if self.enabled:
+            self.guidance_blocks = nn.ModuleList([TFGAM(trad_channels, channels) for channels in feature_channels])
+            self.alphas = nn.Parameter(torch.full((len(feature_channels),), float(alpha_init)))
+        else:
+            self.guidance_blocks = nn.ModuleList()
+            self.register_parameter("alphas", None)
+
+    def forward(
+        self,
+        features: list[torch.Tensor],
+        trad_features: torch.Tensor | None,
+    ) -> list[torch.Tensor]:
+        if not self.enabled or trad_features is None or trad_features.shape[1] == 0:
+            return list(features)
+
+        guided_features: list[torch.Tensor] = []
+        for idx, feature in enumerate(features):
+            resized_trad = F.interpolate(
+                trad_features,
+                size=feature.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+            guided_delta = self.guidance_blocks[idx](feature, resized_trad)
+            guided_features.append(feature + self.alphas[idx] * guided_delta)
+        return guided_features
 
 
 class BuiltInMobileViTEncoder(nn.Module):
@@ -214,8 +246,7 @@ class TFMobileViT(nn.Module):
         channels = list(config.get("encoder_channels", [32, 48, 64, 96]))
         decoder_channels = int(config.get("decoder_channels", 64))
         self.use_tfgam = bool(config.get("use_tfgam", True))
-        self.rgb_shallow = ConvBlock(3, channels[0])
-        self.tfgam = TFGAM(trad_channels, channels[0]) if self.use_tfgam else TFGAM(0, channels[0])
+        alpha_init = float(config.get("tfgam_alpha_init", 0.1))
 
         self.encoder_kind = "builtin"
         try:
@@ -235,7 +266,6 @@ class TFMobileViT(nn.Module):
                     str(pretrained_path) if pretrained_path else None,
                 )
                 enc_channels = self.encoder.out_channels
-                self.encoder_input = nn.Conv2d(channels[0], 3, 1)
                 self.encoder_kind = "timm"
             else:
                 raise ImportError
@@ -246,29 +276,26 @@ class TFMobileViT(nn.Module):
                 RuntimeWarning,
                 stacklevel=2,
             )
-            self.encoder = BuiltInMobileViTEncoder(channels[0], channels)
+            self.encoder = BuiltInMobileViTEncoder(3, channels)
             enc_channels = self.encoder.out_channels
-            self.encoder_input = nn.Identity()
         except ImportError:
-            self.encoder = BuiltInMobileViTEncoder(channels[0], channels)
+            self.encoder = BuiltInMobileViTEncoder(3, channels)
             enc_channels = self.encoder.out_channels
-            self.encoder_input = nn.Identity()
 
         c1, c2, c3, c4 = enc_channels[:4]
+        tfgam_channels = enc_channels[:4] if self.use_tfgam else []
+        self.tfgam = MultiScaleTFGAM(trad_channels, tfgam_channels, alpha_init=alpha_init)
         self.dec3 = DecoderBlock(c4, c3, decoder_channels)
         self.dec2 = DecoderBlock(decoder_channels, c2, decoder_channels)
         self.dec1 = DecoderBlock(decoder_channels, c1, decoder_channels)
-        self.high_fuse = DecoderBlock(decoder_channels, channels[0], decoder_channels)
         self.head = nn.Conv2d(decoder_channels, num_classes, 1)
 
     def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
-        shallow = self.rgb_shallow(image)
-        guided = self.tfgam(shallow, trad_features)
-        features = self.encoder(self.encoder_input(guided))
+        features = self.encoder(image)
+        features = self.tfgam(features, trad_features)
         x = self.dec3(features[-1], features[-2])
         x = self.dec2(x, features[-3])
         x = self.dec1(x, features[-4])
-        x = self.high_fuse(x, guided)
         logits = self.head(x)
         return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
 
