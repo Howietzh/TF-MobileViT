@@ -65,6 +65,15 @@ class QualitativeRow:
     items: list[tuple[str, np.ndarray]]
 
 
+@dataclass
+class SelectedPrediction:
+    selection: DefectSelection
+    baseline_pred: np.ndarray
+    tf_pred: np.ndarray
+    baseline_iou: float
+    tf_iou: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate paper-ready qualitative comparison figures.")
     parser.add_argument("--baseline-run", default="runs/few_shot/mobilevit_no_trad/subset_2", help="Run dir containing baseline config.yaml and best.pt.")
@@ -80,6 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto", help="Device override, e.g. auto, cpu, cuda:0.")
     parser.add_argument("--alpha", type=float, default=0.45, help="Kept for backward compatibility; masks are rendered directly by default.")
     parser.add_argument("--output-name", default="qualitative_comparison", help="Base filename for the single paper figure.")
+    parser.add_argument("--selection-mode", default="iou_gap", choices=["iou_gap", "largest_area"], help="Sample selection strategy.")
     parser.add_argument("--single-figure", dest="single_figure", action="store_true", default=True, help="Generate one paper-ready grid figure.")
     parser.add_argument("--separate-figures", dest="single_figure", action="store_false", help="Generate one figure per defect class.")
     return parser.parse_args()
@@ -191,6 +201,58 @@ def select_defect_sample(
     return best
 
 
+def single_class_iou(pred: np.ndarray, target: np.ndarray, class_id: int, ignore_index: int = 255) -> float:
+    valid = target != ignore_index
+    pred_fg = (pred == class_id) & valid
+    target_fg = (target == class_id) & valid
+    union = pred_fg | target_fg
+    if not union.any():
+        return 0.0
+    return float((pred_fg & target_fg).sum() / union.sum())
+
+
+def select_by_iou_gap(
+    pairs: list[ImageMaskPair],
+    class_id: int,
+    sample_stem: str | None,
+    baseline: LoadedModel,
+    tf_mobilevit: LoadedModel,
+    batch_size: int | None,
+    max_samples: int,
+    prediction_cache: dict[Path, tuple[np.ndarray, np.ndarray]],
+) -> SelectedPrediction | None:
+    candidates = pairs
+    if sample_stem is not None:
+        candidates = [pair for pair in pairs if pair.image_path.stem == sample_stem or pair.image_path.name == sample_stem]
+    best: SelectedPrediction | None = None
+    for pair in candidates[:max_samples]:
+        gt_mask = load_mask(pair.mask_path)
+        component = largest_component(gt_mask == class_id)
+        if component is None:
+            continue
+        if pair.image_path not in prediction_cache:
+            image = load_rgb(pair.image_path)
+            prediction_cache[pair.image_path] = (
+                predict_full_mask(baseline, image, batch_size),
+                predict_full_mask(tf_mobilevit, image, batch_size),
+            )
+        baseline_pred, tf_pred = prediction_cache[pair.image_path]
+        baseline_iou = single_class_iou(baseline_pred, gt_mask, class_id)
+        tf_iou = single_class_iou(tf_pred, gt_mask, class_id)
+        area, bbox, center = component
+        selection = DefectSelection(class_id=class_id, pair=pair, center_y=center[0], center_x=center[1], area=area, bbox=bbox)
+        current = SelectedPrediction(
+            selection=selection,
+            baseline_pred=baseline_pred,
+            tf_pred=tf_pred,
+            baseline_iou=baseline_iou,
+            tf_iou=tf_iou,
+        )
+        if best is None or (tf_iou - baseline_iou) > (best.tf_iou - best.baseline_iou):
+            best = current
+    return best
+
+
 def center_crop(array: np.ndarray, center_y: int, center_x: int, crop_size: int, pad_value: int = 0) -> np.ndarray:
     half = crop_size // 2
     y0 = center_y - half
@@ -296,25 +358,17 @@ def make_class_canvas(items: list[tuple[str, np.ndarray]], cell_size: int) -> Im
 def make_paper_canvas(rows: list[QualitativeRow], cell_size: int) -> Image.Image:
     if not rows:
         raise ValueError("No qualitative rows were generated.")
-    column_titles = [label for label, _ in rows[0].items]
-    label_width = 120
-    header_height = 36
-    row_gap = 10
+    columns = len(rows[0].items)
+    row_gap = 8
     col_gap = 8
-    width = label_width + len(column_titles) * cell_size + max(0, len(column_titles) - 1) * col_gap
-    height = header_height + len(rows) * cell_size + max(0, len(rows) - 1) * row_gap
+    width = columns * cell_size + max(0, columns - 1) * col_gap
+    height = len(rows) * cell_size + max(0, len(rows) - 1) * row_gap
     canvas = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(canvas)
-
-    for col, title in enumerate(column_titles):
-        x0 = label_width + col * (cell_size + col_gap)
-        draw_centered_text(draw, (x0, 0, x0 + cell_size, header_height), title)
 
     for row_idx, row in enumerate(rows):
-        y0 = header_height + row_idx * (cell_size + row_gap)
-        draw_centered_text(draw, (0, y0, label_width - 8, y0 + cell_size), row.label)
+        y0 = row_idx * (cell_size + row_gap)
         for col, (_, image) in enumerate(row.items):
-            x0 = label_width + col * (cell_size + col_gap)
+            x0 = col * (cell_size + col_gap)
             pil = Image.fromarray(to_uint8(image)).convert("RGB")
             if pil.size != (cell_size, cell_size):
                 pil = pil.resize((cell_size, cell_size), Image.Resampling.BILINEAR)
@@ -338,23 +392,19 @@ def class_label(config: dict[str, Any], class_id: int) -> str:
 
 
 def build_qualitative_row(
-    selection: DefectSelection,
+    selected: SelectedPrediction,
     label: str,
-    baseline: LoadedModel,
-    tf_mobilevit: LoadedModel,
     crop_size: int,
-    batch_size: int | None,
     alpha: float,
 ) -> QualitativeRow:
+    selection = selected.selection
     image = load_rgb(selection.pair.image_path)
     gt_mask = load_mask(selection.pair.mask_path)
-    baseline_pred = predict_full_mask(baseline, image, batch_size)
-    tf_pred = predict_full_mask(tf_mobilevit, image, batch_size)
 
     rgb_crop = center_crop(image, selection.center_y, selection.center_x, crop_size, pad_value=0)
     gt_crop = center_crop(gt_mask, selection.center_y, selection.center_x, crop_size, pad_value=0)
-    baseline_crop = center_crop(baseline_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
-    tf_crop = center_crop(tf_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    baseline_crop = center_crop(selected.baseline_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    tf_crop = center_crop(selected.tf_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
     return QualitativeRow(
         class_id=selection.class_id,
         label=label,
@@ -388,19 +438,50 @@ def main() -> None:
     )
 
     rows: list[QualitativeRow] = []
+    prediction_cache: dict[Path, tuple[np.ndarray, np.ndarray]] = {}
     for class_id in args.class_ids:
-        selection = select_defect_sample(pairs, class_id, sample_overrides.get(class_id), args.max_samples)
-        if selection is None:
+        sample_stem = sample_overrides.get(class_id)
+        if args.selection_mode == "iou_gap" or sample_stem is not None:
+            selected = select_by_iou_gap(
+                pairs=pairs,
+                class_id=class_id,
+                sample_stem=sample_stem,
+                baseline=baseline,
+                tf_mobilevit=tf_mobilevit,
+                batch_size=args.batch_size,
+                max_samples=args.max_samples,
+                prediction_cache=prediction_cache,
+            )
+        else:
+            selection = select_defect_sample(pairs, class_id, sample_stem, args.max_samples)
+            if selection is None:
+                selected = None
+            else:
+                image = load_rgb(selection.pair.image_path)
+                baseline_pred = predict_full_mask(baseline, image, args.batch_size)
+                tf_pred = predict_full_mask(tf_mobilevit, image, args.batch_size)
+                gt_mask = load_mask(selection.pair.mask_path)
+                selected = SelectedPrediction(
+                    selection=selection,
+                    baseline_pred=baseline_pred,
+                    tf_pred=tf_pred,
+                    baseline_iou=single_class_iou(baseline_pred, gt_mask, class_id),
+                    tf_iou=single_class_iou(tf_pred, gt_mask, class_id),
+                )
+
+        if selected is None:
             print(f"Warning: no test sample found for class {class_id}. Skipping.", flush=True)
             continue
 
         label = class_label(baseline.config, class_id)
         print(
-            f"Generating class {class_id} ({label}) from {selection.pair.image_path.name} "
-            f"center=({selection.center_y},{selection.center_x}) area={selection.area}",
+            f"class={class_id} label={label} image={selected.selection.pair.image_path.name} "
+            f"baseline_iou={selected.baseline_iou:.4f} tf_iou={selected.tf_iou:.4f} "
+            f"gap={selected.tf_iou - selected.baseline_iou:.4f} "
+            f"center=({selected.selection.center_y},{selected.selection.center_x}) area={selected.selection.area}",
             flush=True,
         )
-        row = build_qualitative_row(selection, label, baseline, tf_mobilevit, args.crop_size, args.batch_size, args.alpha)
+        row = build_qualitative_row(selected, label, args.crop_size, args.alpha)
         rows.append(row)
 
     if args.single_figure:
