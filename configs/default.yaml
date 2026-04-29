@@ -68,7 +68,7 @@ model:
 
 train:
   epochs: 200
-  batch_size: 8
+  batch_size: 16
   log_interval: 10
   val_interval: 5
   tensorboard: true
