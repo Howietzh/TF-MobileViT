@@ -70,7 +70,7 @@ def gpu_features(use_gabor: bool, use_lbp: bool) -> None:
     cfg["features"]["use_lbp"] = use_lbp
     cfg["features"]["use_clahe"] = False
 
-  if method in {"unet", "deeplabv3plus", "segformer_b0"}:
+if method in {"unet", "deeplabv3plus", "segformer_b0"}:
     disable_features()
     cfg["model"]["name"] = method
     cfg["model"]["use_tfgam"] = False
