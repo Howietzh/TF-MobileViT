@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=500, help="Maximum samples to scan per class when auto-selecting.")
     parser.add_argument("--batch-size", type=int, default=None, help="Patch inference batch size. Defaults to eval.batch_size.")
     parser.add_argument("--device", default="auto", help="Device override, e.g. auto, cpu, cuda:0.")
-    parser.add_argument("--alpha", type=float, default=0.45, help="Overlay alpha for GT and prediction masks.")
+    parser.add_argument("--alpha", type=float, default=0.45, help="Kept for backward compatibility; masks are rendered directly by default.")
     parser.add_argument("--output-name", default="qualitative_comparison", help="Base filename for the single paper figure.")
     parser.add_argument("--single-figure", dest="single_figure", action="store_true", default=True, help="Generate one paper-ready grid figure.")
     parser.add_argument("--separate-figures", dest="single_figure", action="store_false", help="Generate one figure per defect class.")
@@ -108,6 +108,16 @@ def to_uint8(image: np.ndarray) -> np.ndarray:
 
 def class_color(class_id: int) -> np.ndarray:
     return CLASS_COLORS[class_id % len(CLASS_COLORS)]
+
+
+def colorize_multiclass_mask(mask: np.ndarray, ignore_index: int = 255) -> np.ndarray:
+    mask = np.asarray(mask)
+    output = np.zeros((*mask.shape, 3), dtype=np.uint8)
+    ignore = mask == ignore_index
+    safe_mask = np.where(ignore, 0, mask).astype(np.int64)
+    output = CLASS_COLORS[safe_mask % len(CLASS_COLORS)].astype(np.uint8)
+    output[ignore] = [80, 80, 80]
+    return output
 
 
 def overlay_multiclass(image: np.ndarray, mask: np.ndarray, alpha: float) -> np.ndarray:
@@ -352,9 +362,9 @@ def build_qualitative_row(
         area=selection.area,
         items=[
             ("RGB", rgb_crop),
-            ("Ground Truth", overlay_multiclass(rgb_crop, gt_crop, alpha)),
-            ("MobileViT baseline", overlay_multiclass(rgb_crop, baseline_crop, alpha)),
-            ("TF-MobileViT", overlay_multiclass(rgb_crop, tf_crop, alpha)),
+            ("Ground Truth", colorize_multiclass_mask(gt_crop)),
+            ("MobileViT baseline", colorize_multiclass_mask(baseline_crop)),
+            ("TF-MobileViT", colorize_multiclass_mask(tf_crop)),
         ],
     )
 
