@@ -10,6 +10,8 @@ GPUS=${GPUS:-2}
 PYTHON=${PYTHON:-python}
 FORCE=${FORCE:-0}
 FEATURE_COMPUTE_DEVICE=${FEATURE_COMPUTE_DEVICE:-gpu}
+MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
+MASTER_PORT=${MASTER_PORT:-$((29500 + RANDOM % 1000))}
 
 if [[ -z "${METHODS}" ]]; then
   echo "METHODS must be set, e.g. METHODS=\"unet deeplabv3plus\"" >&2
@@ -25,6 +27,7 @@ echo "Methods: ${METHODS}"
 echo "Train split: ${TRAIN_SPLIT_FILE}"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-all}"
 echo "GPUs per run: ${GPUS}"
+echo "DDP master: ${MASTER_ADDR}:${MASTER_PORT}"
 echo "Force: ${FORCE}"
 
 for method in ${METHODS}; do
@@ -122,7 +125,11 @@ PY
   else
     echo "==== Training ${method} started at $(date '+%Y-%m-%d %H:%M:%S') ====" | tee "${train_log}"
     set +e
-    "${PYTHON}" -m torch.distributed.run --nproc_per_node="${GPUS}" -m tf_mobilevit.cli train --config "${generated_config}" 2>&1 | tee -a "${train_log}"
+    "${PYTHON}" -m torch.distributed.run \
+      --nproc_per_node="${GPUS}" \
+      --master_addr="${MASTER_ADDR}" \
+      --master_port="${MASTER_PORT}" \
+      -m tf_mobilevit.cli train --config "${generated_config}" 2>&1 | tee -a "${train_log}"
     status=${PIPESTATUS[0]}
     set -e
     if [[ "${status}" -ne 0 ]]; then
