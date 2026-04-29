@@ -58,9 +58,10 @@ def stitch_probabilities(
     device = patches[0].device
     acc = torch.zeros((channels, height, width), dtype=patches[0].dtype, device=device)
     counts = torch.zeros((1, height, width), dtype=patches[0].dtype, device=device)
-    for patch, coord in zip(patches, coords, strict=True):
+    if len(patches) != len(coords):
+        raise ValueError(f"patches and coords must have the same length, got {len(patches)} and {len(coords)}")
+    for patch, coord in zip(patches, coords):
         valid = patch[:, : coord.h, : coord.w]
         acc[:, coord.y : coord.y + coord.h, coord.x : coord.x + coord.w] += valid
         counts[:, coord.y : coord.y + coord.h, coord.x : coord.x + coord.w] += 1
     return acc / counts.clamp_min(1)
-

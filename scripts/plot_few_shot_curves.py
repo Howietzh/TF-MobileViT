@@ -119,7 +119,7 @@ def plot_metric(ax: Any, xs: list[int], results: dict[str, dict[str, list[float 
     }
     for method, label in METHODS.items():
         values = results[method][metric]
-        plot_x = [x for x, value in zip(xs, values, strict=True) if value is not None]
+        plot_x = [x for x, value in zip(xs, values) if value is not None]
         plot_y = [value * 100.0 if percent else value for value in values if value is not None]
         if not plot_x:
             continue
@@ -162,7 +162,7 @@ def main() -> None:
         plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.4), sharex=True)
-    for ax, metric in zip(axes, METRICS, strict=True):
+    for ax, metric in zip(axes, METRICS):
         plot_metric(ax, xs, results, metric, args.percent)
         ax.set_title(METRICS[metric])
     fig.tight_layout()
