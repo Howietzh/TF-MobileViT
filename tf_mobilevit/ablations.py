@@ -10,9 +10,9 @@ from .utils import write_metrics
 
 ABLATIONS = [
     ("mobilevit_baseline", False, False, False, False),
-    ("gabor", True, False, False, False),
-    ("gabor_lbp", True, True, False, False),
-    ("gabor_lbp_clahe", True, True, True, False),
+    ("gabor", True, False, False, True),
+    ("gabor_lbp", True, True, False, True),
+    ("gabor_lbp_clahe", True, True, True, True),
     ("tf_mobilevit", True, True, True, True),
 ]
 

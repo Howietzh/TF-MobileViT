@@ -17,9 +17,9 @@ TABLE1_METHODS = [
 
 TABLE2_METHODS = [
     ("MobileViT baseline", "runs/few_shot/mobilevit_no_trad/subset_6"),
-    ("+ Gabor", "runs/table2_ablation/gabor"),
-    ("+ Gabor + LBP", "runs/table2_ablation/gabor_lbp"),
-    ("+ Gabor + LBP + CLAHE", "runs/table2_ablation/gabor_lbp_clahe"),
+    ("+ Gabor + TFGAM", "runs/table2_ablation/gabor"),
+    ("+ Gabor + LBP + TFGAM", "runs/table2_ablation/gabor_lbp"),
+    ("+ Gabor + LBP + CLAHE + TFGAM", "runs/table2_ablation/gabor_lbp_clahe"),
     ("TF-MobileViT", "runs/few_shot/tf_mobilevit/subset_6"),
 ]
 
@@ -121,9 +121,9 @@ def main() -> None:
     ]
     table2_sources = [
         ("MobileViT baseline", existing_root / "mobilevit_no_trad" / existing_subset),
-        ("+ Gabor", table2_root / "gabor"),
-        ("+ Gabor + LBP", table2_root / "gabor_lbp"),
-        ("+ Gabor + LBP + CLAHE", table2_root / "gabor_lbp_clahe"),
+        ("+ Gabor + TFGAM", table2_root / "gabor"),
+        ("+ Gabor + LBP + TFGAM", table2_root / "gabor_lbp"),
+        ("+ Gabor + LBP + CLAHE + TFGAM", table2_root / "gabor_lbp_clahe"),
         ("TF-MobileViT", existing_root / "tf_mobilevit" / existing_subset),
     ]
 

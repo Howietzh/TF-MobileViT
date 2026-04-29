@@ -85,13 +85,13 @@ if method in {"unet", "deeplabv3plus", "segformer_b0"}:
 elif method == "gabor":
     gpu_features(True, False)
     cfg["model"]["name"] = "gabor"
-    cfg["model"]["use_tfgam"] = False
-    cfg["model"]["direct_trad_fusion"] = True
+    cfg["model"]["use_tfgam"] = True
+    cfg["model"]["direct_trad_fusion"] = False
 elif method == "gabor_lbp":
     gpu_features(True, True)
     cfg["model"]["name"] = "gabor_lbp"
-    cfg["model"]["use_tfgam"] = False
-    cfg["model"]["direct_trad_fusion"] = True
+    cfg["model"]["use_tfgam"] = True
+    cfg["model"]["direct_trad_fusion"] = False
 elif method == "gabor_lbp_clahe":
     cfg["features"]["enabled"] = True
     cfg["features"]["compute_device"] = "cpu"
@@ -99,8 +99,8 @@ elif method == "gabor_lbp_clahe":
     cfg["features"]["use_lbp"] = True
     cfg["features"]["use_clahe"] = True
     cfg["model"]["name"] = "gabor_lbp_clahe"
-    cfg["model"]["use_tfgam"] = False
-    cfg["model"]["direct_trad_fusion"] = True
+    cfg["model"]["use_tfgam"] = True
+    cfg["model"]["direct_trad_fusion"] = False
 elif method == "mobilevit_no_trad":
     disable_features()
     cfg["model"]["name"] = "mobilevit_no_trad"
