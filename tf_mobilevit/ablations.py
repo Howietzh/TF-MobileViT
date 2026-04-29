@@ -27,9 +27,9 @@ def run_ablations(config: dict[str, Any]) -> list[dict[str, float | str]]:
         cfg["features"]["use_lbp"] = use_lbp
         cfg["features"]["use_clahe"] = use_clahe
         cfg["model"]["use_tfgam"] = use_tfgam
+        cfg["model"]["direct_trad_fusion"] = any([use_gabor, use_lbp, use_clahe]) and not use_tfgam
         cfg["train"]["output_dir"] = str(base_output / name)
         metrics = train(cfg)
         rows.append({"method": name, **metrics})
     write_metrics(base_output / "ablation_summary.csv", rows)
     return rows
-

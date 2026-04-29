@@ -186,6 +186,36 @@ class MultiScaleTFGAM(nn.Module):
         return guided_features
 
 
+class DirectTraditionalFusion(nn.Module):
+    def __init__(self, trad_channels: int, feature_channels: list[int], alpha_init: float = 0.1) -> None:
+        super().__init__()
+        self.enabled = trad_channels > 0 and len(feature_channels) > 0
+        if self.enabled:
+            self.projections = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        nn.Conv2d(trad_channels, channels, 3, padding=1, bias=False),
+                        nn.BatchNorm2d(channels),
+                        nn.SiLU(inplace=True),
+                    )
+                    for channels in feature_channels
+                ]
+            )
+            self.alphas = nn.Parameter(torch.full((len(feature_channels),), float(alpha_init)))
+        else:
+            self.projections = nn.ModuleList()
+            self.register_parameter("alphas", None)
+
+    def forward(self, features: list[torch.Tensor], trad_features: torch.Tensor | None) -> list[torch.Tensor]:
+        if not self.enabled or trad_features is None or trad_features.shape[1] == 0:
+            return list(features)
+        fused: list[torch.Tensor] = []
+        for idx, feature in enumerate(features):
+            resized_trad = F.interpolate(trad_features, size=feature.shape[-2:], mode="bilinear", align_corners=False)
+            fused.append(feature + self.alphas[idx] * self.projections[idx](resized_trad))
+        return fused
+
+
 class BuiltInMobileViTEncoder(nn.Module):
     def __init__(self, in_channels: int, channels: list[int]) -> None:
         super().__init__()
@@ -234,6 +264,136 @@ class DecoderBlock(nn.Module):
         return self.conv(torch.cat([x, skip], dim=1))
 
 
+class SimpleUNet(nn.Module):
+    def __init__(self, num_classes: int, channels: list[int] | None = None) -> None:
+        super().__init__()
+        c1, c2, c3, c4 = channels or [32, 64, 128, 256]
+        self.enc1 = ConvBlock(3, c1)
+        self.enc2 = ConvBlock(c1, c2)
+        self.enc3 = ConvBlock(c2, c3)
+        self.enc4 = ConvBlock(c3, c4)
+        self.pool = nn.MaxPool2d(2)
+        self.dec3 = DecoderBlock(c4, c3, c3)
+        self.dec2 = DecoderBlock(c3, c2, c2)
+        self.dec1 = DecoderBlock(c2, c1, c1)
+        self.head = nn.Conv2d(c1, num_classes, 1)
+
+    def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
+        f1 = self.enc1(image)
+        f2 = self.enc2(self.pool(f1))
+        f3 = self.enc3(self.pool(f2))
+        f4 = self.enc4(self.pool(f3))
+        x = self.dec3(f4, f3)
+        x = self.dec2(x, f2)
+        x = self.dec1(x, f1)
+        return self.head(x)
+
+
+class ConvPyramidEncoder(nn.Module):
+    def __init__(self, channels: list[int]) -> None:
+        super().__init__()
+        c1, c2, c3, c4 = channels
+        self.stage1 = ConvBlock(3, c1, stride=2)
+        self.stage2 = ConvBlock(c1, c2, stride=2)
+        self.stage3 = ConvBlock(c2, c3, stride=2)
+        self.stage4 = ConvBlock(c3, c4, stride=2)
+        self.out_channels = channels
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        f1 = self.stage1(x)
+        f2 = self.stage2(f1)
+        f3 = self.stage3(f2)
+        f4 = self.stage4(f3)
+        return [f1, f2, f3, f4]
+
+
+class ASPP(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, rates: tuple[int, ...] = (1, 6, 12, 18)) -> None:
+        super().__init__()
+        self.branches = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv2d(in_channels, out_channels, 1 if rate == 1 else 3, padding=0 if rate == 1 else rate, dilation=rate, bias=False),
+                    nn.BatchNorm2d(out_channels),
+                    nn.SiLU(inplace=True),
+                )
+                for rate in rates
+            ]
+        )
+        self.project = ConvBlock(out_channels * len(rates), out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.project(torch.cat([branch(x) for branch in self.branches], dim=1))
+
+
+class DeepLabV3PlusSegmentation(nn.Module):
+    def __init__(self, num_classes: int, channels: list[int] | None = None, decoder_channels: int = 128) -> None:
+        super().__init__()
+        channels = channels or [64, 128, 256, 512]
+        self.encoder = ConvPyramidEncoder(channels)
+        c1, _, _, c4 = channels
+        self.aspp = ASPP(c4, decoder_channels)
+        self.low_proj = nn.Sequential(
+            nn.Conv2d(c1, 48, 1, bias=False),
+            nn.BatchNorm2d(48),
+            nn.SiLU(inplace=True),
+        )
+        self.decoder = ConvBlock(decoder_channels + 48, decoder_channels)
+        self.head = nn.Conv2d(decoder_channels, num_classes, 1)
+
+    def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
+        features = self.encoder(image)
+        x = self.aspp(features[-1])
+        low = self.low_proj(features[0])
+        x = F.interpolate(x, size=low.shape[-2:], mode="bilinear", align_corners=False)
+        x = self.decoder(torch.cat([x, low], dim=1))
+        logits = self.head(x)
+        return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
+
+
+class TimmEncoderDecoderSegmentation(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        backbone: str,
+        decoder_channels: int = 128,
+        fallback_channels: list[int] | None = None,
+    ) -> None:
+        super().__init__()
+        fallback_channels = fallback_channels or [32, 64, 160, 256]
+        try:
+            self.encoder = TimmEncoder(backbone, pretrained=False, pretrained_path=None)
+        except Exception as exc:
+            warnings.warn(
+                f"Could not create timm backbone {backbone!r}; using a compact convolutional pyramid instead. "
+                f"Original error: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self.encoder = ConvPyramidEncoder(fallback_channels)
+        channels = self.encoder.out_channels[:4]
+        c1, c2, c3, c4 = channels
+        self.proj4 = nn.Conv2d(c4, decoder_channels, 1)
+        self.proj3 = nn.Conv2d(c3, decoder_channels, 1)
+        self.proj2 = nn.Conv2d(c2, decoder_channels, 1)
+        self.proj1 = nn.Conv2d(c1, decoder_channels, 1)
+        self.fuse = ConvBlock(decoder_channels * 4, decoder_channels)
+        self.head = nn.Conv2d(decoder_channels, num_classes, 1)
+
+    def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
+        f1, f2, f3, f4 = self.encoder(image)[:4]
+        target_size = f1.shape[-2:]
+        features = [
+            self.proj1(f1),
+            F.interpolate(self.proj2(f2), size=target_size, mode="bilinear", align_corners=False),
+            F.interpolate(self.proj3(f3), size=target_size, mode="bilinear", align_corners=False),
+            F.interpolate(self.proj4(f4), size=target_size, mode="bilinear", align_corners=False),
+        ]
+        x = self.fuse(torch.cat(features, dim=1))
+        logits = self.head(x)
+        return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
+
+
 class TFMobileViT(nn.Module):
     def __init__(
         self,
@@ -246,6 +406,7 @@ class TFMobileViT(nn.Module):
         channels = list(config.get("encoder_channels", [32, 48, 64, 96]))
         decoder_channels = int(config.get("decoder_channels", 64))
         self.use_tfgam = bool(config.get("use_tfgam", True))
+        self.use_direct_trad_fusion = bool(config.get("direct_trad_fusion", False))
         alpha_init = float(config.get("tfgam_alpha_init", 0.1))
 
         self.encoder_kind = "builtin"
@@ -285,6 +446,8 @@ class TFMobileViT(nn.Module):
         c1, c2, c3, c4 = enc_channels[:4]
         tfgam_channels = enc_channels[:4] if self.use_tfgam else []
         self.tfgam = MultiScaleTFGAM(trad_channels, tfgam_channels, alpha_init=alpha_init)
+        direct_fusion_channels = enc_channels[:4] if self.use_direct_trad_fusion and not self.use_tfgam else []
+        self.direct_trad_fusion = DirectTraditionalFusion(trad_channels, direct_fusion_channels, alpha_init=alpha_init)
         self.dec3 = DecoderBlock(c4, c3, decoder_channels)
         self.dec2 = DecoderBlock(decoder_channels, c2, decoder_channels)
         self.dec1 = DecoderBlock(decoder_channels, c1, decoder_channels)
@@ -293,6 +456,7 @@ class TFMobileViT(nn.Module):
     def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
         features = self.encoder(image)
         features = self.tfgam(features, trad_features)
+        features = self.direct_trad_fusion(features, trad_features)
         x = self.dec3(features[-1], features[-2])
         x = self.dec2(x, features[-3])
         x = self.dec1(x, features[-4])
@@ -300,6 +464,25 @@ class TFMobileViT(nn.Module):
         return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
 
 
-def build_model(config: dict[str, Any], trad_channels: int) -> TFMobileViT:
+def build_model(config: dict[str, Any], trad_channels: int) -> nn.Module:
     num_classes = len(config["dataset"]["classes"])
-    return TFMobileViT(num_classes=num_classes, trad_channels=trad_channels, config=config.get("model", {}))
+    model_config = config.get("model", {})
+    name = str(model_config.get("name", "tf_mobilevit")).lower()
+    if name == "unet":
+        return SimpleUNet(num_classes=num_classes, channels=list(model_config.get("unet_channels", [32, 64, 128, 256])))
+    if name == "deeplabv3plus":
+        return DeepLabV3PlusSegmentation(
+            num_classes=num_classes,
+            channels=list(model_config.get("deeplab_channels", [64, 128, 256, 512])),
+            decoder_channels=int(model_config.get("decoder_channels", 128)),
+        )
+    if name == "segformer_b0":
+        return TimmEncoderDecoderSegmentation(
+            num_classes=num_classes,
+            backbone=str(model_config.get("segformer_backbone", "mit_b0")),
+            decoder_channels=int(model_config.get("decoder_channels", 128)),
+            fallback_channels=list(model_config.get("segformer_channels", [32, 64, 160, 256])),
+        )
+    if name in {"tf_mobilevit", "mobilevit_no_trad", "mobilevit_baseline", "gabor", "gabor_lbp", "gabor_lbp_clahe"}:
+        return TFMobileViT(num_classes=num_classes, trad_channels=trad_channels, config=model_config)
+    raise ValueError(f"Unsupported model.name: {name}")

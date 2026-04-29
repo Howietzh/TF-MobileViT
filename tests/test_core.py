@@ -83,6 +83,52 @@ def test_model_forward_with_gpu_features() -> None:
     assert logits.shape == (1, 3, 64, 64)
 
 
+def test_baseline_model_names_forward_shape() -> None:
+    names = ["unet", "deeplabv3plus", "segformer_b0", "mobilevit_no_trad"]
+    image = torch.rand(1, 3, 64, 64)
+    trad = torch.rand(1, 7, 64, 64)
+    for name in names:
+        config = {
+            "dataset": {"classes": ["background", "a", "b"]},
+            "model": {
+                "name": name,
+                "timm_backbone": None,
+                "pretrained": False,
+                "encoder_channels": [8, 12, 16, 24],
+                "decoder_channels": 16,
+                "unet_channels": [8, 12, 16, 24],
+                "deeplab_channels": [8, 12, 16, 24],
+                "segformer_channels": [8, 12, 16, 24],
+                "segformer_backbone": "mit_b0",
+                "use_tfgam": False,
+            },
+        }
+        model = build_model(config, trad_channels=0 if name != "mobilevit_no_trad" else trad.shape[1])
+        logits = model(image, trad)
+        assert logits.shape == (1, 3, 64, 64)
+
+
+def test_direct_traditional_fusion_forward_shape() -> None:
+    config = {
+        "dataset": {"classes": ["background", "a", "b"]},
+        "model": {
+            "name": "gabor_lbp",
+            "timm_backbone": None,
+            "pretrained": False,
+            "encoder_channels": [8, 12, 16, 24],
+            "decoder_channels": 16,
+            "use_tfgam": False,
+            "direct_trad_fusion": True,
+            "tfgam_alpha_init": 0.1,
+        },
+    }
+    model = build_model(config, trad_channels=7)
+    image = torch.rand(1, 3, 64, 64)
+    trad = torch.rand(1, 7, 64, 64)
+    logits = model(image, trad)
+    assert logits.shape == (1, 3, 64, 64)
+
+
 def test_multiscale_tfgam_shapes_and_learnable_alphas() -> None:
     module = MultiScaleTFGAM(trad_channels=7, feature_channels=[8, 12, 16, 24], alpha_init=0.1)
     features = [
