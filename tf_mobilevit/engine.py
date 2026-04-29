@@ -358,6 +358,7 @@ def train(config: dict[str, Any]) -> dict[str, float]:
                 "foreground_dice": metrics.get("foreground_dice", ""),
                 "foreground_recall": metrics.get("foreground_recall", ""),
                 "fps": metrics.get("fps", ""),
+                "total_time_sec": metrics.get("total_time_sec", ""),
                 **metrics,
             }
             history.append(row)
