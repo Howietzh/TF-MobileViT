@@ -70,11 +70,15 @@ def gpu_features(use_gabor: bool, use_lbp: bool) -> None:
     cfg["features"]["use_lbp"] = use_lbp
     cfg["features"]["use_clahe"] = False
 
-if method in {"unet", "deeplabv3plus", "segformer_b0"}:
+  if method in {"unet", "deeplabv3plus", "segformer_b0"}:
     disable_features()
     cfg["model"]["name"] = method
     cfg["model"]["use_tfgam"] = False
     cfg["model"]["direct_trad_fusion"] = False
+    if method == "deeplabv3plus":
+        cfg["model"]["deeplab_pretrained_path"] = cfg["model"].get("deeplab_pretrained_path", "weights/resnet50-11ad3fa6.pth")
+    if method == "segformer_b0":
+        cfg["model"]["segformer_pretrained_path"] = cfg["model"].get("segformer_pretrained_path", "weights/nvidia_mit_b0")
 elif method == "gabor":
     gpu_features(True, False)
     cfg["model"]["name"] = "gabor"

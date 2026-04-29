@@ -98,8 +98,10 @@ def test_baseline_model_names_forward_shape() -> None:
                 "decoder_channels": 16,
                 "unet_channels": [8, 12, 16, 24],
                 "deeplab_channels": [8, 12, 16, 24],
+                "deeplab_pretrained_path": None,
                 "segformer_channels": [8, 12, 16, 24],
                 "segformer_backbone": "mit_b0",
+                "segformer_pretrained_path": None,
                 "use_tfgam": False,
             },
         }

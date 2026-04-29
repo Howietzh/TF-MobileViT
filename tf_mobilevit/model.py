@@ -307,6 +307,49 @@ class ConvPyramidEncoder(nn.Module):
         return [f1, f2, f3, f4]
 
 
+class ResNetEncoder(nn.Module):
+    def __init__(self, pretrained_path: str | None = None) -> None:
+        super().__init__()
+        try:
+            from torchvision.models import resnet50
+        except Exception as exc:
+            raise RuntimeError("DeepLabv3+ ResNet-50 baseline requires torchvision.") from exc
+
+        model = resnet50(weights=None)
+        if pretrained_path:
+            checkpoint_path = Path(pretrained_path).expanduser()
+            if checkpoint_path.exists():
+                state = load_checkpoint_file(str(checkpoint_path))
+                incompatible = model.load_state_dict(state, strict=False)
+                print(
+                    f"Loaded local ResNet-50 checkpoint from {pretrained_path}: "
+                    f"{len(state)} tensors, {len(incompatible.missing_keys)} missing, "
+                    f"{len(incompatible.unexpected_keys)} unexpected.",
+                    flush=True,
+                )
+            else:
+                warnings.warn(
+                    f"Configured ResNet-50 pretrained_path does not exist: {pretrained_path}. "
+                    "DeepLabv3+ will use random initialization.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        self.stem = nn.Sequential(model.conv1, model.bn1, model.relu, model.maxpool)
+        self.layer1 = model.layer1
+        self.layer2 = model.layer2
+        self.layer3 = model.layer3
+        self.layer4 = model.layer4
+        self.out_channels = [256, 512, 1024, 2048]
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        x = self.stem(x)
+        f1 = self.layer1(x)
+        f2 = self.layer2(f1)
+        f3 = self.layer3(f2)
+        f4 = self.layer4(f3)
+        return [f1, f2, f3, f4]
+
+
 class ASPP(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, rates: tuple[int, ...] = (1, 6, 12, 18)) -> None:
         super().__init__()
@@ -327,11 +370,20 @@ class ASPP(nn.Module):
 
 
 class DeepLabV3PlusSegmentation(nn.Module):
-    def __init__(self, num_classes: int, channels: list[int] | None = None, decoder_channels: int = 128) -> None:
+    def __init__(
+        self,
+        num_classes: int,
+        channels: list[int] | None = None,
+        decoder_channels: int = 128,
+        pretrained_path: str | None = None,
+    ) -> None:
         super().__init__()
-        channels = channels or [64, 128, 256, 512]
-        self.encoder = ConvPyramidEncoder(channels)
-        c1, _, _, c4 = channels
+        if pretrained_path:
+            self.encoder = ResNetEncoder(pretrained_path)
+        else:
+            channels = channels or [64, 128, 256, 512]
+            self.encoder = ConvPyramidEncoder(channels)
+        c1, _, _, c4 = self.encoder.out_channels
         self.aspp = ASPP(c4, decoder_channels)
         self.low_proj = nn.Sequential(
             nn.Conv2d(c1, 48, 1, bias=False),
@@ -358,11 +410,22 @@ class TimmEncoderDecoderSegmentation(nn.Module):
         backbone: str,
         decoder_channels: int = 128,
         fallback_channels: list[int] | None = None,
+        pretrained: bool = False,
+        pretrained_path: str | None = None,
     ) -> None:
         super().__init__()
         fallback_channels = fallback_channels or [32, 64, 160, 256]
         try:
-            self.encoder = TimmEncoder(backbone, pretrained=False, pretrained_path=None)
+            checkpoint_path = str(Path(pretrained_path).expanduser()) if pretrained_path else None
+            if checkpoint_path and not Path(checkpoint_path).exists():
+                warnings.warn(
+                    f"Configured SegFormer pretrained_path does not exist: {pretrained_path}. "
+                    "Falling back to timm pretrained download if enabled.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                checkpoint_path = None
+            self.encoder = TimmEncoder(backbone, pretrained=pretrained and not checkpoint_path, pretrained_path=checkpoint_path)
         except Exception as exc:
             warnings.warn(
                 f"Could not create timm backbone {backbone!r}; using a compact convolutional pyramid instead. "
@@ -373,6 +436,48 @@ class TimmEncoderDecoderSegmentation(nn.Module):
             self.encoder = ConvPyramidEncoder(fallback_channels)
         channels = self.encoder.out_channels[:4]
         c1, c2, c3, c4 = channels
+        self.proj4 = nn.Conv2d(c4, decoder_channels, 1)
+        self.proj3 = nn.Conv2d(c3, decoder_channels, 1)
+        self.proj2 = nn.Conv2d(c2, decoder_channels, 1)
+        self.proj1 = nn.Conv2d(c1, decoder_channels, 1)
+        self.fuse = ConvBlock(decoder_channels * 4, decoder_channels)
+        self.head = nn.Conv2d(decoder_channels, num_classes, 1)
+
+    def forward(self, image: torch.Tensor, trad_features: torch.Tensor | None = None) -> torch.Tensor:
+        f1, f2, f3, f4 = self.encoder(image)[:4]
+        target_size = f1.shape[-2:]
+        features = [
+            self.proj1(f1),
+            F.interpolate(self.proj2(f2), size=target_size, mode="bilinear", align_corners=False),
+            F.interpolate(self.proj3(f3), size=target_size, mode="bilinear", align_corners=False),
+            F.interpolate(self.proj4(f4), size=target_size, mode="bilinear", align_corners=False),
+        ]
+        x = self.fuse(torch.cat(features, dim=1))
+        logits = self.head(x)
+        return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
+
+
+class HFSegFormerEncoder(nn.Module):
+    def __init__(self, pretrained_dir: str | Path) -> None:
+        super().__init__()
+        try:
+            from transformers import SegformerModel
+        except Exception as exc:
+            raise RuntimeError("Loading nvidia/mit-b0 local weights requires `transformers`.") from exc
+
+        self.model = SegformerModel.from_pretrained(str(pretrained_dir), local_files_only=True)
+        self.out_channels = list(self.model.config.hidden_sizes)
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        outputs = self.model(pixel_values=x, output_hidden_states=True, return_dict=True)
+        return list(outputs.hidden_states[-4:])
+
+
+class HFSegFormerSegmentation(nn.Module):
+    def __init__(self, num_classes: int, pretrained_dir: str | Path, decoder_channels: int = 128) -> None:
+        super().__init__()
+        self.encoder = HFSegFormerEncoder(pretrained_dir)
+        c1, c2, c3, c4 = self.encoder.out_channels[:4]
         self.proj4 = nn.Conv2d(c4, decoder_channels, 1)
         self.proj3 = nn.Conv2d(c3, decoder_channels, 1)
         self.proj2 = nn.Conv2d(c2, decoder_channels, 1)
@@ -475,13 +580,23 @@ def build_model(config: dict[str, Any], trad_channels: int) -> nn.Module:
             num_classes=num_classes,
             channels=list(model_config.get("deeplab_channels", [64, 128, 256, 512])),
             decoder_channels=int(model_config.get("decoder_channels", 128)),
+            pretrained_path=model_config.get("deeplab_pretrained_path"),
         )
     if name == "segformer_b0":
+        segformer_pretrained_path = model_config.get("segformer_pretrained_path")
+        if segformer_pretrained_path and (Path(str(segformer_pretrained_path)).expanduser() / "config.json").exists():
+            return HFSegFormerSegmentation(
+                num_classes=num_classes,
+                pretrained_dir=Path(str(segformer_pretrained_path)).expanduser(),
+                decoder_channels=int(model_config.get("decoder_channels", 128)),
+            )
         return TimmEncoderDecoderSegmentation(
             num_classes=num_classes,
             backbone=str(model_config.get("segformer_backbone", "mit_b0")),
             decoder_channels=int(model_config.get("decoder_channels", 128)),
             fallback_channels=list(model_config.get("segformer_channels", [32, 64, 160, 256])),
+            pretrained=bool(model_config.get("pretrained", False)),
+            pretrained_path=model_config.get("segformer_pretrained_path"),
         )
     if name in {"tf_mobilevit", "mobilevit_no_trad", "mobilevit_baseline", "gabor", "gabor_lbp", "gabor_lbp_clahe"}:
         return TFMobileViT(num_classes=num_classes, trad_channels=trad_channels, config=model_config)
