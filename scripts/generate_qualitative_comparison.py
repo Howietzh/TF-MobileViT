@@ -90,6 +90,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, default=0.45, help="Kept for backward compatibility; masks are rendered directly by default.")
     parser.add_argument("--output-name", default="qualitative_comparison", help="Base filename for the single paper figure.")
     parser.add_argument("--selection-mode", default="iou_gap", choices=["iou_gap", "largest_area"], help="Sample selection strategy.")
+    parser.add_argument("--classes-per-row", type=int, default=2, help="Number of defect classes per row in the single paper figure.")
+    parser.add_argument("--gt-inset-ratio", type=float, default=0.35, help="Relative GT inset size inside prediction masks.")
     parser.add_argument("--single-figure", dest="single_figure", action="store_true", default=True, help="Generate one paper-ready grid figure.")
     parser.add_argument("--separate-figures", dest="single_figure", action="store_false", help="Generate one figure per defect class.")
     return parser.parse_args()
@@ -139,6 +141,36 @@ def overlay_multiclass(image: np.ndarray, mask: np.ndarray, alpha: float) -> np.
     colors = CLASS_COLORS[safe_mask % len(CLASS_COLORS)]
     image[foreground] = ((1.0 - alpha) * image[foreground].astype(np.float32) + alpha * colors[foreground]).astype(np.uint8)
     return image
+
+
+def add_inset(base_image: np.ndarray, inset_image: np.ndarray, ratio: float = 0.35) -> np.ndarray:
+    base = to_uint8(base_image).copy()
+    inset = Image.fromarray(to_uint8(inset_image)).convert("RGB")
+    height, width = base.shape[:2]
+    inset_size = max(1, int(round(min(height, width) * ratio)))
+    inset = inset.resize((inset_size, inset_size), Image.Resampling.NEAREST)
+
+    output = Image.fromarray(base).convert("RGB")
+    draw = ImageDraw.Draw(output)
+    margin = max(2, int(round(inset_size * 0.06)))
+    outer_border = max(2, int(round(inset_size * 0.035)))
+    inner_border = max(1, int(round(inset_size * 0.015)))
+    x1 = width - margin
+    y1 = height - margin
+    x0 = x1 - inset_size
+    y0 = y1 - inset_size
+
+    draw.rectangle(
+        [x0 - outer_border, y0 - outer_border, x1 + outer_border, y1 + outer_border],
+        fill=(255, 255, 255),
+    )
+    draw.rectangle(
+        [x0 - inner_border, y0 - inner_border, x1 + inner_border, y1 + inner_border],
+        outline=(0, 0, 0),
+        width=inner_border,
+    )
+    output.paste(inset, (x0, y0))
+    return np.asarray(output)
 
 
 def largest_component(binary: np.ndarray) -> tuple[int, tuple[int, int, int, int], tuple[int, int]] | None:
@@ -339,40 +371,46 @@ def draw_centered_text(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]
 
 
 def make_class_canvas(items: list[tuple[str, np.ndarray]], cell_size: int) -> Image.Image:
-    labeled: list[Image.Image] = []
-    for label, image in items:
+    images: list[Image.Image] = []
+    for _, image in items:
         pil = Image.fromarray(to_uint8(image)).convert("RGB")
         if pil.size != (cell_size, cell_size):
             pil = pil.resize((cell_size, cell_size), Image.Resampling.BILINEAR)
-        labeled.append(add_label(pil, label))
-    total_width = sum(item.width for item in labeled)
-    total_height = max(item.height for item in labeled)
+        images.append(pil)
+    total_width = sum(item.width for item in images)
+    total_height = max(item.height for item in images)
     canvas = Image.new("RGB", (total_width, total_height), "white")
     x = 0
-    for item in labeled:
+    for item in images:
         canvas.paste(item, (x, 0))
         x += item.width
     return canvas
 
 
-def make_paper_canvas(rows: list[QualitativeRow], cell_size: int) -> Image.Image:
+def make_paper_canvas(rows: list[QualitativeRow], cell_size: int, classes_per_row: int) -> Image.Image:
     if not rows:
         raise ValueError("No qualitative rows were generated.")
-    columns = len(rows[0].items)
+    classes_per_row = max(1, classes_per_row)
+    cells_per_class = len(rows[0].items)
+    row_groups = [rows[start : start + classes_per_row] for start in range(0, len(rows), classes_per_row)]
+    columns = max(len(group) * cells_per_class for group in row_groups)
     row_gap = 8
     col_gap = 8
     width = columns * cell_size + max(0, columns - 1) * col_gap
-    height = len(rows) * cell_size + max(0, len(rows) - 1) * row_gap
+    height = len(row_groups) * cell_size + max(0, len(row_groups) - 1) * row_gap
     canvas = Image.new("RGB", (width, height), "white")
 
-    for row_idx, row in enumerate(rows):
-        y0 = row_idx * (cell_size + row_gap)
-        for col, (_, image) in enumerate(row.items):
-            x0 = col * (cell_size + col_gap)
-            pil = Image.fromarray(to_uint8(image)).convert("RGB")
-            if pil.size != (cell_size, cell_size):
-                pil = pil.resize((cell_size, cell_size), Image.Resampling.BILINEAR)
-            canvas.paste(pil, (x0, y0))
+    for group_idx, group in enumerate(row_groups):
+        y0 = group_idx * (cell_size + row_gap)
+        for class_idx, row in enumerate(group):
+            base_col = class_idx * cells_per_class
+            for item_idx, (_, image) in enumerate(row.items):
+                col = base_col + item_idx
+                x0 = col * (cell_size + col_gap)
+                pil = Image.fromarray(to_uint8(image)).convert("RGB")
+                if pil.size != (cell_size, cell_size):
+                    pil = pil.resize((cell_size, cell_size), Image.Resampling.BILINEAR)
+                canvas.paste(pil, (x0, y0))
     return canvas
 
 
@@ -395,7 +433,7 @@ def build_qualitative_row(
     selected: SelectedPrediction,
     label: str,
     crop_size: int,
-    alpha: float,
+    gt_inset_ratio: float,
 ) -> QualitativeRow:
     selection = selected.selection
     image = load_rgb(selection.pair.image_path)
@@ -405,6 +443,9 @@ def build_qualitative_row(
     gt_crop = center_crop(gt_mask, selection.center_y, selection.center_x, crop_size, pad_value=0)
     baseline_crop = center_crop(selected.baseline_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
     tf_crop = center_crop(selected.tf_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    gt_mask_rgb = colorize_multiclass_mask(gt_crop)
+    baseline_mask_rgb = add_inset(colorize_multiclass_mask(baseline_crop), gt_mask_rgb, gt_inset_ratio)
+    tf_mask_rgb = add_inset(colorize_multiclass_mask(tf_crop), gt_mask_rgb, gt_inset_ratio)
     return QualitativeRow(
         class_id=selection.class_id,
         label=label,
@@ -412,9 +453,8 @@ def build_qualitative_row(
         area=selection.area,
         items=[
             ("RGB", rgb_crop),
-            ("Ground Truth", colorize_multiclass_mask(gt_crop)),
-            ("MobileViT baseline", colorize_multiclass_mask(baseline_crop)),
-            ("TF-MobileViT", colorize_multiclass_mask(tf_crop)),
+            ("MobileViT baseline", baseline_mask_rgb),
+            ("TF-MobileViT", tf_mask_rgb),
         ],
     )
 
@@ -481,11 +521,11 @@ def main() -> None:
             f"center=({selected.selection.center_y},{selected.selection.center_x}) area={selected.selection.area}",
             flush=True,
         )
-        row = build_qualitative_row(selected, label, args.crop_size, args.alpha)
+        row = build_qualitative_row(selected, label, args.crop_size, args.gt_inset_ratio)
         rows.append(row)
 
     if args.single_figure:
-        canvas = make_paper_canvas(rows, args.crop_size)
+        canvas = make_paper_canvas(rows, args.crop_size, args.classes_per_row)
         output_base = output_dir / args.output_name
         save_canvas(canvas, output_base, args.format)
         print(f"Saved {output_base.with_suffix('.' + ('pdf' if args.format != 'png' else 'png'))}", flush=True)
