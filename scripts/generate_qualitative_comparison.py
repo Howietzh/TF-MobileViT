@@ -56,20 +56,32 @@ class LoadedModel:
     device: torch.device
 
 
+@dataclass
+class QualitativeRow:
+    class_id: int
+    label: str
+    sample_name: str
+    area: int
+    items: list[tuple[str, np.ndarray]]
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate class-wise qualitative comparison figures.")
+    parser = argparse.ArgumentParser(description="Generate paper-ready qualitative comparison figures.")
     parser.add_argument("--baseline-run", default="runs/few_shot/mobilevit_no_trad/subset_2", help="Run dir containing baseline config.yaml and best.pt.")
     parser.add_argument("--tf-run", default="runs/few_shot/tf_mobilevit/subset_2", help="Run dir containing TF-MobileViT config.yaml and best.pt.")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Dataset split to visualize.")
     parser.add_argument("--output-dir", default="figures/qualitative_comparison/subset_2", help="Output directory.")
     parser.add_argument("--format", default="pdf", choices=["pdf", "png", "both"], help="Output format.")
-    parser.add_argument("--crop-size", type=int, default=512, help="Center crop size around the selected defect.")
+    parser.add_argument("--crop-size", type=int, default=384, help="Center crop size around the selected defect.")
     parser.add_argument("--class-ids", type=int, nargs="+", default=[1, 2, 3, 4], help="Foreground class IDs to visualize.")
     parser.add_argument("--sample-id", action="append", default=[], help="Optional CLASS_ID=IMAGE_STEM override. Can be repeated.")
     parser.add_argument("--max-samples", type=int, default=500, help="Maximum samples to scan per class when auto-selecting.")
     parser.add_argument("--batch-size", type=int, default=None, help="Patch inference batch size. Defaults to eval.batch_size.")
     parser.add_argument("--device", default="auto", help="Device override, e.g. auto, cpu, cuda:0.")
     parser.add_argument("--alpha", type=float, default=0.45, help="Overlay alpha for GT and prediction masks.")
+    parser.add_argument("--output-name", default="qualitative_comparison", help="Base filename for the single paper figure.")
+    parser.add_argument("--single-figure", dest="single_figure", action="store_true", default=True, help="Generate one paper-ready grid figure.")
+    parser.add_argument("--separate-figures", dest="single_figure", action="store_false", help="Generate one figure per defect class.")
     return parser.parse_args()
 
 
@@ -242,7 +254,19 @@ def add_label(image: Image.Image, label: str, height: int = 34) -> Image.Image:
     return output
 
 
-def make_comparison_canvas(items: list[tuple[str, np.ndarray]], cell_size: int = 512) -> Image.Image:
+def draw_centered_text(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, fill: tuple[int, int, int] = (20, 20, 20)) -> None:
+    font = ImageFont.load_default()
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except AttributeError:
+        text_width, text_height = draw.textsize(text, font=font)
+    x0, y0, x1, y1 = box
+    draw.text((x0 + (x1 - x0 - text_width) / 2, y0 + (y1 - y0 - text_height) / 2), text, fill=fill, font=font)
+
+
+def make_class_canvas(items: list[tuple[str, np.ndarray]], cell_size: int) -> Image.Image:
     labeled: list[Image.Image] = []
     for label, image in items:
         pil = Image.fromarray(to_uint8(image)).convert("RGB")
@@ -259,6 +283,35 @@ def make_comparison_canvas(items: list[tuple[str, np.ndarray]], cell_size: int =
     return canvas
 
 
+def make_paper_canvas(rows: list[QualitativeRow], cell_size: int) -> Image.Image:
+    if not rows:
+        raise ValueError("No qualitative rows were generated.")
+    column_titles = [label for label, _ in rows[0].items]
+    label_width = 120
+    header_height = 36
+    row_gap = 10
+    col_gap = 8
+    width = label_width + len(column_titles) * cell_size + max(0, len(column_titles) - 1) * col_gap
+    height = header_height + len(rows) * cell_size + max(0, len(rows) - 1) * row_gap
+    canvas = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    for col, title in enumerate(column_titles):
+        x0 = label_width + col * (cell_size + col_gap)
+        draw_centered_text(draw, (x0, 0, x0 + cell_size, header_height), title)
+
+    for row_idx, row in enumerate(rows):
+        y0 = header_height + row_idx * (cell_size + row_gap)
+        draw_centered_text(draw, (0, y0, label_width - 8, y0 + cell_size), row.label)
+        for col, (_, image) in enumerate(row.items):
+            x0 = label_width + col * (cell_size + col_gap)
+            pil = Image.fromarray(to_uint8(image)).convert("RGB")
+            if pil.size != (cell_size, cell_size):
+                pil = pil.resize((cell_size, cell_size), Image.Resampling.BILINEAR)
+            canvas.paste(pil, (x0, y0))
+    return canvas
+
+
 def save_canvas(canvas: Image.Image, output_base: Path, fmt: str) -> None:
     output_base.parent.mkdir(parents=True, exist_ok=True)
     if fmt in {"pdf", "both"}:
@@ -272,6 +325,38 @@ def class_label(config: dict[str, Any], class_id: int) -> str:
     if 0 <= class_id < len(classes):
         return str(classes[class_id])
     return f"class_{class_id}"
+
+
+def build_qualitative_row(
+    selection: DefectSelection,
+    label: str,
+    baseline: LoadedModel,
+    tf_mobilevit: LoadedModel,
+    crop_size: int,
+    batch_size: int | None,
+    alpha: float,
+) -> QualitativeRow:
+    image = load_rgb(selection.pair.image_path)
+    gt_mask = load_mask(selection.pair.mask_path)
+    baseline_pred = predict_full_mask(baseline, image, batch_size)
+    tf_pred = predict_full_mask(tf_mobilevit, image, batch_size)
+
+    rgb_crop = center_crop(image, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    gt_crop = center_crop(gt_mask, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    baseline_crop = center_crop(baseline_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    tf_crop = center_crop(tf_pred, selection.center_y, selection.center_x, crop_size, pad_value=0)
+    return QualitativeRow(
+        class_id=selection.class_id,
+        label=label,
+        sample_name=selection.pair.image_path.name,
+        area=selection.area,
+        items=[
+            ("RGB", rgb_crop),
+            ("Ground Truth", overlay_multiclass(rgb_crop, gt_crop, alpha)),
+            ("MobileViT baseline", overlay_multiclass(rgb_crop, baseline_crop, alpha)),
+            ("TF-MobileViT", overlay_multiclass(rgb_crop, tf_crop, alpha)),
+        ],
+    )
 
 
 def main() -> None:
@@ -292,6 +377,7 @@ def main() -> None:
         data_cfg,
     )
 
+    rows: list[QualitativeRow] = []
     for class_id in args.class_ids:
         selection = select_defect_sample(pairs, class_id, sample_overrides.get(class_id), args.max_samples)
         if selection is None:
@@ -304,28 +390,20 @@ def main() -> None:
             f"center=({selection.center_y},{selection.center_x}) area={selection.area}",
             flush=True,
         )
-        image = load_rgb(selection.pair.image_path)
-        gt_mask = load_mask(selection.pair.mask_path)
-        baseline_pred = predict_full_mask(baseline, image, args.batch_size)
-        tf_pred = predict_full_mask(tf_mobilevit, image, args.batch_size)
+        row = build_qualitative_row(selection, label, baseline, tf_mobilevit, args.crop_size, args.batch_size, args.alpha)
+        rows.append(row)
 
-        rgb_crop = center_crop(image, selection.center_y, selection.center_x, args.crop_size, pad_value=0)
-        gt_crop = center_crop(gt_mask, selection.center_y, selection.center_x, args.crop_size, pad_value=0)
-        baseline_crop = center_crop(baseline_pred, selection.center_y, selection.center_x, args.crop_size, pad_value=0)
-        tf_crop = center_crop(tf_pred, selection.center_y, selection.center_x, args.crop_size, pad_value=0)
-
-        canvas = make_comparison_canvas(
-            [
-                ("RGB", rgb_crop),
-                ("Ground Truth", overlay_multiclass(rgb_crop, gt_crop, args.alpha)),
-                ("MobileViT baseline", overlay_multiclass(rgb_crop, baseline_crop, args.alpha)),
-                ("TF-MobileViT", overlay_multiclass(rgb_crop, tf_crop, args.alpha)),
-            ],
-            cell_size=args.crop_size,
-        )
-        output_base = output_dir / f"class_{class_id}_{safe_name(label)}"
+    if args.single_figure:
+        canvas = make_paper_canvas(rows, args.crop_size)
+        output_base = output_dir / args.output_name
         save_canvas(canvas, output_base, args.format)
         print(f"Saved {output_base.with_suffix('.' + ('pdf' if args.format != 'png' else 'png'))}", flush=True)
+    else:
+        for row in rows:
+            canvas = make_class_canvas(row.items, args.crop_size)
+            output_base = output_dir / f"class_{row.class_id}_{safe_name(row.label)}"
+            save_canvas(canvas, output_base, args.format)
+            print(f"Saved {output_base.with_suffix('.' + ('pdf' if args.format != 'png' else 'png'))}", flush=True)
 
 
 if __name__ == "__main__":
