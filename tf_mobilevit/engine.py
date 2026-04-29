@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import os
 import time
@@ -113,6 +114,14 @@ def get_batch_features(
     return batch["features"].to(device)
 
 
+def cuda_autocast(enabled: bool):
+    if not enabled:
+        return nullcontext()
+    if hasattr(torch, "amp"):
+        return torch.amp.autocast("cuda", enabled=True)
+    return torch.cuda.amp.autocast(enabled=True)
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -164,7 +173,6 @@ def train_one_epoch(
     return total / max(count, 1), global_step
 
 
-@torch.no_grad()
 def evaluate_model(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -175,16 +183,43 @@ def evaluate_model(
     model.eval()
     num_classes = len(config["dataset"]["classes"])
     ignore_index = int(config["dataset"].get("ignore_index", 255))
+    eval_config = config.get("eval", {})
+    log_interval = int(eval_config.get("log_interval", 10))
+    amp_enabled = bool(eval_config.get("amp", False)) and device.type == "cuda"
+    total_batches = len(loader)
+    total_samples = len(loader.dataset)
     metrics = SegmentationMetrics(num_classes, ignore_index)
     started = time.perf_counter()
     samples = 0
-    for batch in loader:
-        image = batch["image"].to(device)
-        features = get_batch_features(batch, image, feature_extractor, device)
-        mask = batch["mask"].to(device)
-        logits = model(image, features)
-        metrics.update(logits, mask)
-        samples += image.shape[0]
+    if is_main_process():
+        print(
+            f"Eval started | batches={total_batches} patches={total_samples} "
+            f"batch_size={loader.batch_size} amp={amp_enabled}",
+            flush=True,
+        )
+    with torch.inference_mode():
+        for batch_idx, batch in enumerate(loader, start=1):
+            image = batch["image"].to(device)
+            features = get_batch_features(batch, image, feature_extractor, device)
+            mask = batch["mask"].to(device)
+            with cuda_autocast(amp_enabled):
+                logits = model(image, features)
+            metrics.update(logits, mask)
+            samples += image.shape[0]
+
+            if is_main_process() and log_interval > 0 and (
+                batch_idx % log_interval == 0 or batch_idx == 1 or batch_idx == total_batches
+            ):
+                elapsed = time.perf_counter() - started
+                fps = samples / max(elapsed, 1e-6)
+                remaining = max(total_samples - samples, 0)
+                eta = remaining / max(fps, 1e-6)
+                print(
+                    f"Eval Batch [{batch_idx}/{total_batches}] "
+                    f"patches={samples}/{total_samples} fps={fps:.2f} "
+                    f"elapsed={elapsed:.1f}s eta={eta:.1f}s",
+                    flush=True,
+                )
     if distributed_is_available():
         confusion = metrics.confusion.to(device)
         dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
@@ -192,8 +227,18 @@ def evaluate_model(
         samples_tensor = torch.tensor(samples, dtype=torch.float64, device=device)
         dist.all_reduce(samples_tensor, op=dist.ReduceOp.SUM)
         samples = int(samples_tensor.item())
+    total_time = time.perf_counter() - started
     result = metrics.compute()
-    result["fps"] = samples / max(time.perf_counter() - started, 1e-6)
+    result["fps"] = samples / max(total_time, 1e-6)
+    result["total_time_sec"] = total_time
+    if is_main_process():
+        print(
+            f"Eval done | fg_dice={result['foreground_dice']:.4f} "
+            f"| fg_iou={result['foreground_iou']:.4f} "
+            f"| recall={result['foreground_recall']:.4f} "
+            f"| fps={result['fps']:.2f} | time={total_time:.1f}s",
+            flush=True,
+        )
     return result
 
 

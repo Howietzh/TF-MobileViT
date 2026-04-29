@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,6 +166,9 @@ class CCMPatchDataset(Dataset):
         self.patch_size = int(data_cfg.get("patch_size", 512))
         self.overlap = float(data_cfg.get("overlap", 0.5))
         self.ignore_index = int(data_cfg.get("ignore_index", 255))
+        self.cache_eval_images = bool(data_cfg.get("cache_eval_images", True)) and not training
+        self.cache_eval_max_items = max(0, int(data_cfg.get("cache_eval_max_items", 4)))
+        self._image_mask_cache: OrderedDict[tuple[Path, Path], tuple[np.ndarray, np.ndarray]] = OrderedDict()
         self.feature_config = FeatureConfig.from_dict(config.get("features", {}))
         self.defer_features = uses_gpu_features(self.feature_config)
         self.augment = RandomAugment(data_cfg.get("augment", {})) if training else RandomAugment({"enabled": False})
@@ -205,10 +209,25 @@ class CCMPatchDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sampled_indices)
 
+    def _load_pair(self, pair: ImageMaskPair) -> tuple[np.ndarray, np.ndarray]:
+        if not self.cache_eval_images or self.cache_eval_max_items <= 0:
+            return load_rgb(pair.image_path), load_mask(pair.mask_path)
+        key = (pair.image_path, pair.mask_path)
+        cached = self._image_mask_cache.get(key)
+        if cached is not None:
+            self._image_mask_cache.move_to_end(key)
+            return cached
+        image = load_rgb(pair.image_path)
+        mask = load_mask(pair.mask_path)
+        self._image_mask_cache[key] = (image, mask)
+        self._image_mask_cache.move_to_end(key)
+        while len(self._image_mask_cache) > self.cache_eval_max_items:
+            self._image_mask_cache.popitem(last=False)
+        return image, mask
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str | tuple[int, int, int, int]]:
         record = self.records[self.sampled_indices[idx]]
-        image = load_rgb(record.pair.image_path)
-        mask = load_mask(record.pair.mask_path)
+        image, mask = self._load_pair(record.pair)
         image_patch = extract_patch(image, record.coord, self.patch_size, pad_value=0)
         mask_patch = extract_patch(mask, record.coord, self.patch_size, pad_value=self.ignore_index)
         image_patch, mask_patch = self.augment(image_patch, mask_patch)

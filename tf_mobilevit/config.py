@@ -23,6 +23,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "patch_size": 512,
         "overlap": 0.5,
         "ignore_index": 255,
+        "cache_eval_images": True,
+        "cache_eval_max_items": 4,
     },
     "features": {
         "enabled": True,
@@ -69,7 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "output_dir": "runs/tf_mobilevit",
         "save_every": 10,
     },
-    "eval": {"batch_size": 8, "threshold": 0.5},
+    "eval": {"batch_size": 8, "threshold": 0.5, "log_interval": 10, "amp": True},
 }
 
 
