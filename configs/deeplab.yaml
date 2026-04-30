@@ -1,0 +1,91 @@
+seed: 42
+device: auto
+num_workers: 2
+
+dataset:
+  root: data/CCM_Defect
+  image_dir: images
+  mask_dir: annotations
+  layout: split_files
+  train_split_file: train_subset_1.txt
+  val_split_file: val.txt
+  test_split_file: test.txt
+  classes:
+    - background
+    - FPC cracks
+    - foreign particles
+    - end face notches
+    - lens scratches
+  patch_size: 512
+  overlap: 0.5
+  ignore_index: 255
+  cache_eval_images: true
+  cache_eval_max_items: 4
+  train_sampling:
+    defect: 0.6
+    boundary: 0.2
+    normal: 0.2
+  augment:
+    enabled: true
+    horizontal_flip: 0.5
+    vertical_flip: 0.2
+    rotate90: 0.5
+    brightness: 0.15
+    contrast: 0.15
+
+features:
+  enabled: true
+  compute_device: gpu
+  gpu_features:
+    gabor: true
+    lbp: true
+    clahe: false
+  use_gabor: true
+  use_lbp: true
+  use_clahe: false
+  gabor_orientations: [0, 30, 60, 90, 120, 150]
+  gabor_kernel_size: 21
+  gabor_sigma: 4.0
+  gabor_lambda: 10.0
+  gabor_gamma: 0.5
+  lbp_radius: 1
+  lbp_points: 8
+  clahe_clip_limit: 2.0
+  clahe_tile_grid_size: [8, 8]
+
+model:
+  name: tf_mobilevit
+  timm_backbone: mobilevit_xxs
+  pretrained: true
+  pretrained_path: weights/model.safetensors
+  encoder_channels: [32, 48, 64, 96]
+  decoder_channels: 64
+  use_tfgam: true
+  tfgam_mode: multiscale
+  tfgam_alpha_init: 0.1
+  direct_mobilevit_input: true
+  feature_channels: 7
+
+train:
+  epochs: 100
+  batch_size: 16
+  log_interval: 10
+  val_interval: 10
+  tensorboard: true
+  distributed: auto
+  lr: 0.001
+  min_lr: 0.000001
+  scheduler: cosine
+  weight_decay: 0.0001
+  loss:
+    dice: 1.0
+    focal: 1.0
+    boundary: 0.0
+  output_dir: runs/tf_mobilevit
+  save_every: 10
+
+eval:
+  batch_size: 8
+  threshold: 0.5
+  log_interval: 10
+  amp: true
