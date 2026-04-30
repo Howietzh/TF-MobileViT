@@ -3,6 +3,7 @@ set -euo pipefail
 
 PYTHON=${PYTHON:-python}
 TABLES=${TABLES:-"table1 table2"}
+METHODS=${METHODS:-}
 EXISTING_ROOT=${EXISTING_ROOT:-runs/few_shot}
 EXISTING_SUBSET=${EXISTING_SUBSET:-6}
 TABLE1_ROOT=${TABLE1_ROOT:-runs/table1}
@@ -19,6 +20,7 @@ RUN_SUMMARY=${RUN_SUMMARY:-1}
 mkdir -p "${EVAL_CONFIG_DIR}"
 
 echo "Tables: ${TABLES}"
+echo "Methods: ${METHODS:-all methods in selected tables}"
 echo "Existing root: ${EXISTING_ROOT}"
 echo "Existing subset: subset_${EXISTING_SUBSET}"
 echo "Table1 root: ${TABLE1_ROOT}"
@@ -54,9 +56,28 @@ emit_specs() {
   done
 }
 
+method_selected() {
+  local candidate="$1"
+  if [[ -z "${METHODS}" ]]; then
+    return 0
+  fi
+  for selected in ${METHODS}; do
+    if [[ "${selected}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 evaluated_dirs="|"
+matched_methods="|"
 while IFS='|' read -r table method output_dir; do
   [[ -n "${table}" ]] || continue
+
+  if ! method_selected "${method}"; then
+    continue
+  fi
+  matched_methods="${matched_methods}${method}|"
 
   if [[ "${evaluated_dirs}" == *"|${output_dir}|"* ]]; then
     echo
@@ -158,6 +179,14 @@ PY
   echo "==== Test eval finished at $(date '+%Y-%m-%d %H:%M:%S') ====" | tee -a "${log_file}"
   echo "Metrics saved to: ${output_dir}/test_metrics.json"
 done < <(emit_specs)
+
+if [[ -n "${METHODS}" ]]; then
+  for selected in ${METHODS}; do
+    if [[ "${matched_methods}" != *"|${selected}|"* ]]; then
+      echo "Warning: requested method was not found in selected tables: ${selected}" >&2
+    fi
+  done
+fi
 
 if [[ "${RUN_SUMMARY}" == "1" ]]; then
   echo
